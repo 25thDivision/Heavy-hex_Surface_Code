@@ -1,0 +1,22 @@
+# credentials — NEVER commit
+keys.json
+
+# reference solutions (staff only, excluded from the student distribution)
+solutions/
+
+# generated data / training artifacts
+dataset/
+checkpoint/
+results/
+hardware/runs/
+slurm/logs/
+coupling_*.json
+
+# python
+__pycache__/
+*.pyc
+*.egg-info/
+
+# editors
+.vscode/
+.idea/

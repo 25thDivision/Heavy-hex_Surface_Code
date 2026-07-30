@@ -1,0 +1,4 @@
+{
+  "ibm_token": "YOUR_IBM_QUANTUM_PLATFORM_API_KEY",
+  "ibm_instance": "YOUR_IBM_CLOUD_INSTANCE_CRN"
+}

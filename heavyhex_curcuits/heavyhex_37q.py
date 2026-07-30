@@ -167,6 +167,32 @@ def check_values(syn_rows, num_cycles):
             prev[a] = raw.copy()
     return vals
 
+def required_edges():
+    """all physical couplings the hardcoded 37q patch needs (undirected)."""
+    need = []
+    rung_pairs = {37: (25, 45), 56: (43, 63), 57: (47, 67), 76: (61, 81),
+                  77: (65, 85), 78: (69, 89), 96: (83, 103), 97: (87, 107)}
+    for a, (u, v) in rung_pairs.items():
+        need += [(a, u), (a, v)]
+    for row in [(43, 47), (61, 69), (81, 89), (103, 107)]:
+        for q in range(row[0], row[1]):
+            need.append((q, q + 1))
+    return [tuple(sorted(e)) for e in need]
+
+
+def validate_backend(coupling_json_path, raise_on_fail=True):
+    """Verify the hardcoded q25-q107 patch exists on the given backend.
+    Call this FIRST in any pipeline before building 37q circuits.
+    Returns [] if valid, else the list of missing edges."""
+    import json
+    cm = json.load(open(coupling_json_path))
+    edges = {tuple(sorted(e)) for e in cm['coupling_map']}
+    missing = [e for e in required_edges() if e not in edges]
+    if missing and raise_on_fail:
+        raise RuntimeError(
+            f"backend '{cm.get('name', '?')}' lacks {len(missing)} edges "
+            f"required by the 37q patch: {missing}")
+    return missing
 
 if __name__ == '__main__':
     sc = HeavyHex37Q(num_cycles=2)
@@ -175,3 +201,5 @@ if __name__ == '__main__':
     print(f"2-cycle: depth={qc.depth()} ({qc.depth()/2:.0f}/cyc), "
           f"cx={ops.get('cx')/2:.0f}/cyc, h={ops.get('h')/2:.0f}/cyc, "
           f"reset={ops.get('reset', 0)}, meas={ops.get('measure')/2:.1f}/cyc")
+
+

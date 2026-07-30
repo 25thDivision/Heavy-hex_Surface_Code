@@ -30,7 +30,8 @@ Bridges used: R1 {44,64,84,104,68,88}, R2 {46,66,86,106,62,82} -- disjoint.
 
 import numpy as np
 from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
-from heavyhex_37q import (ALL_PHYS, DATA_PHYS, ANC_PHYS, L, br,
+from heavyhex_curcuits.heavyhex_37q import (validate_backend,  # noqa: F401 (re-export)
+                             ALL_PHYS, DATA_PHYS, ANC_PHYS, L, br,
                              Z_STABS, X_STABS, CHECK_DEFS,
                              LOGICAL_Z, LOGICAL_X)
 
