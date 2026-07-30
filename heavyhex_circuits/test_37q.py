@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """V5 noiseless verification (37-qubit paper code)."""
+import sys
+from pathlib import Path
+
 import numpy as np
 from qiskit_aer import AerSimulator
-from heavyhex_v6_depth7 import (
-    HeavyHex37QDepthOpt as HeavyHex37Q, check_values, CYCLE_ORDER,
-    X_INRUN_SUPPORT, N_CHECKS)
-from heavyhex_v5_37q import Z_STABS, X_STABS, DATA_PHYS, LOGICAL_Z
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from heavyhex_circuits.heavyhex_37q import (  # noqa: E402
+    HeavyHex37Q, check_values, Z_STABS, X_STABS, CYCLE_ORDER,
+    DATA_PHYS, LOGICAL_Z, N_CHECKS)
 
 SHOTS = 400
 sim = AerSimulator()
@@ -32,7 +36,7 @@ def main():
     n_cyc, ok = 3, True
     syn, dat, w, qc = run(n_cyc)
     ops = qc.count_ops()
-    print(f"=== V6 (depth-opt) |0>_L {n_cyc} cycles ===")
+    print(f"=== V5 |0>_L {n_cyc} cycles ===")
     print(f"depth={qc.depth()/n_cyc:.0f}/cyc cx={ops.get('cx')/n_cyc:.0f}/cyc "
           f"h={ops.get('h')/n_cyc:.0f}/cyc reset={ops.get('reset', 0)} "
           f"meas={ops.get('measure')/n_cyc:.1f}/cyc")

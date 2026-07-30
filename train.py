@@ -75,6 +75,31 @@ def parse_args():
     return ap.parse_args()
 
 
+def ensure_coupling_json(backend="ibm_yonsei"):
+    """Make sure a coupling_<backend>.json exists (fetch it if missing).
+
+    Training itself never touches the coupling map — it only matters for
+    the circuit tests and the hardware steps — so this is best-effort:
+    without keys.json or network access it just prints a note and moves on
+    (e.g. on offline slurm GPU nodes)."""
+    if list(_ROOT.glob("coupling_*.json")):
+        return
+    keys_path = _ROOT / "keys.json"
+    if not keys_path.exists():
+        print("NOTE: no coupling_*.json and no keys.json — skipping coupling "
+              "fetch (training doesn't need it; hardware/tests do).")
+        return
+    try:
+        import json
+        from heavyhex_circuits.fetch_coupling import fetch
+        keys = json.load(open(keys_path))
+        fetch(backend, token=keys.get("ibm_token"),
+              instance=keys.get("ibm_instance"), outdir=str(_ROOT))
+    except Exception as e:
+        print(f"WARNING: coupling fetch failed ({e}) — continuing, "
+              f"training doesn't need it.")
+
+
 def get_model_module(use_solution):
     if use_solution:
         from solutions import cnn_solution as mod
@@ -216,6 +241,7 @@ def main():
         args.epochs = min(args.epochs, 3)
         noises, rates = noises[:1], rates[:1]
 
+    ensure_coupling_json()
     mod = get_model_module(args.solution)
     print(f"model module: {mod.__name__} | device: {device}")
 

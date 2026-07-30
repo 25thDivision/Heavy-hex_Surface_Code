@@ -21,7 +21,7 @@ arms within one round; no duplicated targets).
 import numpy as np
 from itertools import product
 from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
-from heavyhex_curcuits.heavyhex_general import GeneralDiamondCircuit
+from heavyhex_circuits.heavyhex_general import GeneralDiamondCircuit
 
 
 class DepthOptDiamond(GeneralDiamondCircuit):
@@ -185,7 +185,7 @@ class DepthOptDiamond(GeneralDiamondCircuit):
 
 
 if __name__ == '__main__':
-    CJ = '/mnt/user-data/uploads/coupling_ibm_boston.json'
+    CJ = 'coupling_ibm_boston.json'  # generate first via fetch_coupling.py
     for dx, dz in [(3, 3), (3, 5), (5, 3)]:
         gc = DepthOptDiamond(dx, dz, CJ, num_cycles=2)
         qc = gc.build_circuit()

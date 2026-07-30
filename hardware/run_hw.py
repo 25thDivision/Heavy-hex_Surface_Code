@@ -56,11 +56,11 @@ import numpy as np
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
-from heavyhex_curcuits.heavyhex_37q import ALL_PHYS, validate_backend  # noqa: E402
-from heavyhex_curcuits.heavyhex_depth7_opt_for_37q import (  # noqa: E402
+from heavyhex_circuits.heavyhex_37q import ALL_PHYS, validate_backend  # noqa: E402
+from heavyhex_circuits.heavyhex_depth7_opt_for_37q import (  # noqa: E402
     HeavyHex37QDepthOpt, check_values, N_CHECKS)
-from heavyhex_curcuits.fetch_coupling import fetch  # noqa: E402
-from heavyhex_curcuits.dd_utils import apply_dd, dd_pulse_stats  # noqa: E402
+from heavyhex_circuits.fetch_coupling import fetch  # noqa: E402
+from heavyhex_circuits.dd_utils import apply_dd, dd_pulse_stats  # noqa: E402
 
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     check_matrix_from_dict, syndrome_tensor, logical_label, ACTIVE_NOISE)

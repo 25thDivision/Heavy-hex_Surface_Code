@@ -18,15 +18,16 @@ Physical mapping to Heron (boston/aachen/pittsburgh):
       to both endpoints (looked up from the coupling map).
 """
 import json
+import os
 import numpy as np
 from itertools import combinations
 from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
-from heavyhex_curcuits.diamond_generator import build_code, gf2_rank, rung_of_check
+from heavyhex_circuits.diamond_generator import build_code, gf2_rank, rung_of_check
 
 
 # --------------------------------------------------------------- solving
 def solve(dx, dz, cache=True):
-    fn = f"/home/claude/sol_{dx}{dz}.json"
+    fn = os.path.join(os.path.dirname(__file__), f"sol_{dx}{dz}.json")
     if cache:
         try:
             d = json.load(open(fn))

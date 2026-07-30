@@ -144,7 +144,7 @@ sbatch slurm/train.sbatch --all --mwpm      # 인자는 train.py로 그대로 �
 ## 7. 저장소 구조
 
 ```
-heavyhex_curcuits/      고정된 회로 자산 (재작성하지 말고 import해서 쓸 것)
+heavyhex_circuits/      고정된 회로 자산 (재작성하지 말고 import해서 쓸 것)
   heavyhex_37q.py                 (3,3) 코드 정의: CHECK_DEFS, DATA_PHYS,
                                   LOGICAL_Z, check_values, validate_backend
   heavyhex_depth7_opt_for_37q.py  최적화된 depth-7 QPU 회로
@@ -168,3 +168,8 @@ hardware/               IBM 제출 + 분석 파이프라인 (runs/에 런별 기
 QPU 회로 흐름 (원본 저장소 README에서): `fetch_coupling` →
 surface code 회로 생성 → `transpile` → DD — `hardware/run_hw.py`가 정확히
 이 순서로 되어 있어.
+
+참고: `heavyhex_circuits/` 안의 회로 테스트 중 coupling map을 쓰는 것들
+(test_general.py, heavyhex_depth_opt.py 데모)은 fetch_coupling.py로
+coupling JSON을 먼저 생성한 뒤 실행해야 해 (test_37q.py /
+test_depth7_opt_for_37q.py는 Aer만 쓰므로 바로 실행 가능).
