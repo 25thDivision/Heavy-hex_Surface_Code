@@ -12,12 +12,12 @@ Usage:
 Writes coupling_<backend>.json next to this script (or --outdir), containing
 {name, num_qubits, coupling_map, basis_gates} -- the exact format expected by
 heavyhex_general.DepthOptDiamond / GeneralDiamondCircuit and by
-heavyhex_v5_37q.validate_backend.
+heavyhex_37q.validate_backend.
 
 Typical pipeline preamble:
 
     from fetch_coupling import fetch
-    from heavyhex_v5_37q import validate_backend          # (3,3) V6 path
+    from heavyhex_37q import validate_backend          # (3,3) V6 path
     from heavyhex_depthopt import DepthOptDiamond         # (3,5)/(5,3) path
 
     path = fetch("ibm_yonsei", token=TOKEN, instance=CRN)
