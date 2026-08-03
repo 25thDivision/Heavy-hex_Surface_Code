@@ -37,7 +37,7 @@ Stim 시뮬레이션 → CNN 디코더 학습 → MWPM 기준선 → IBM QPU 검
 ## 2. 환경 설정
 
 ```bash
-conda create -n 환경이름 python=3.12
+conda create -n 환경이름 python=3.12 pip
 conda activate 환경이름
 pip install -r requirements.txt
 ```
@@ -133,13 +133,25 @@ cp keys.example.json keys.json     # 그리고 네 거로 적으면 됨
 
 ## 6. Slurm (서버)
 
-[slurm/train.sbatch](slurm/train.sbatch)의 파티션 이름을 먼저 바꿔줘
-(`#SBATCH --partition=YOUR_PARTITION` → 클러스터의 GPU 파티션명). 그 다음:
+sbatch 스크립트는 repo 루트에 두 개 있어 (파티션은 서버의 `main`으로 이미
+설정돼 있음). 먼저 [train.sbatch](train.sbatch)의 `CONDA_ENV`를 본인 환경
+이름으로 바꾸고 (또는 제출할 때 `CONDA_ENV=이름`으로 덮어쓰기), **repo
+루트에서** 제출해줘 — 로그가 [slurm_logs/](slurm_logs/)에 쌓여.
 
 ```bash
-mkdir -p slurm/logs
-sbatch slurm/train.sbatch --all --mwpm      # 인자는 train.py로 그대로 전달돼
+# 학습만 (데이터셋이 이미 있을 때)
+sbatch train.sbatch --all --mwpm            # 인자는 train.py로 그대로 전달돼
+
+# 통합 파이프라인: 규약 게이트 -> 데이터셋 생성 -> 학습
+sbatch pipeline.sbatch --all --mwpm
+DATASET_ARGS="--smoke" sbatch pipeline.sbatch --smoke   # 빠른 end-to-end 확인
 ```
+
+이미 생성된 데이터셋 파일은 make_dataset.py가 알아서 건너뛰니까
+pipeline.sbatch를 다시 제출해도 데이터 생성이 중복되지 않아.
+
+pipeline.sbatch는 flock으로 중복 실행을 차단해 — 파이프라인 job 2개가
+동시에 돌면 같은 npz 파일을 동시에 써서 데이터가 깨질 수 있기 때문.
 
 ## 7. 저장소 구조
 
@@ -161,7 +173,9 @@ model/                  채워야 할 파일 (cnn_skeleton.py) + 데이터 로�
 evaluation/             ECR / LER 지표
 baseline/               MWPM (PyMatching) 기준선
 train.py                학습 진입점 (완성본, 수정할 필요 없어)
-slurm/                  sbatch 스크립트
+train.sbatch            slurm 학습 job (§6)
+pipeline.sbatch         slurm 통합 파이프라인: 게이트 -> 데이터셋 -> 학습 (§6)
+slurm_logs/             slurm job 로그 (내용물은 gitignore)
 hardware/               IBM 제출 + 분석 파이프라인 (runs/에 런별 기록)
 ```
 

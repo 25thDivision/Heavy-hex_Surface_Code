@@ -37,6 +37,7 @@ Usage:
   python dataset_generation/make_dataset.py -n realistic/dp0.001_mf0.01_rf0.01_gd0.008 -p 0.01
 """
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -136,10 +137,20 @@ def main():
                     seed = args.seed * 1000 + hash((noise, p, et)) % 10007 + seed_off
                     f, l, y = generate_split(circuit, args.cycles, n,
                                              seed & 0x7FFFFFFF, split)
-                    np.savez_compressed(
-                        fname, features=f, labels=l, logical_labels=y,
-                        num_cycles=args.cycles, noise_profile=noise,
-                        error_rate=p, error_type=et)
+                    # atomic write: dump to a temp file, then rename. A
+                    # crashed/concurrent run can never leave a half-written
+                    # npz under the final name (the exists-skip above would
+                    # otherwise trust it and training would hit BadZipFile).
+                    tmp = fname.with_name(f".{fname.name}.{os.getpid()}.tmp")
+                    try:
+                        with open(tmp, "wb") as fh:
+                            np.savez_compressed(
+                                fh, features=f, labels=l, logical_labels=y,
+                                num_cycles=args.cycles, noise_profile=noise,
+                                error_rate=p, error_type=et)
+                        tmp.replace(fname)
+                    finally:
+                        tmp.unlink(missing_ok=True)
                     ler0 = float(y.mean())
                     print(f"      saved {fname.name}: features{f.shape}, "
                           f"raw logical-flip rate={ler0:.4f}")

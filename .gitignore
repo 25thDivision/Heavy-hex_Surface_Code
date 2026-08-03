@@ -9,7 +9,9 @@ dataset/
 checkpoint/
 results/
 hardware/runs/
-slurm/logs/
+# slurm_logs/ 폴더 자체는 동기화하되 내용물(로그)만 무시
+slurm_logs/*
+!slurm_logs/.gitkeep
 coupling_*.json
 
 # python
