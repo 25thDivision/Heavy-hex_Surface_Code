@@ -4,12 +4,15 @@ Hardware validation on IBM Quantum backends
 ===========================================
 Pipeline (submit):
   keys.json -> fetch_coupling.fetch() -> validate_backend()
-    -> HeavyHex37QDepthOpt circuit -> transpile(initial_layout=ALL_PHYS,
-    optimization_level=1) -> dd_utils.apply_dd(tqc, backend.target)
+    -> HeavyHex37QDepthOpt circuit -> transpile(initial_layout =
+    ALL_PHYS mapped through embedding_for(backend), optimization_level=1)
+    -> dd_utils.apply_dd(tqc, backend.target)
     -> QPU environment snapshot -> SamplerV2 submit
 Pipeline (analyze):
   raw results -> check_values() XOR-chain syndrome recovery
     -> syndrome tensor -> CNN + MWPM decoding -> LER report
+    -> results/hardware/hw_<run_id>.csv
+Pipeline (all): submit -> wait_for_job -> analyze in one go.
 
 Every submission gets its own folder so the run can be re-analyzed (and
 the QPU environment of that moment stays on record):
@@ -40,10 +43,14 @@ Notes:
 Usage:
   python hardware/run_hw.py submit  [--backend ibm_yonsei] [--shots 50000]
                                     [--cycles 3] [--dd XX4] [--dry-run]
-  python hardware/run_hw.py analyze --job-id <ID> --ckpt checkpoint/CNN_....pt
-  python hardware/run_hw.py analyze --npz hardware/runs/<ID>/raw.npz --ckpt ...
+  python hardware/run_hw.py analyze --job-id <ID> [--ckpt checkpoint/CNN_....pt]
+  python hardware/run_hw.py analyze --npz hardware/runs/<ID>/raw.npz [--ckpt ...]
+  python hardware/run_hw.py all     [submit options] [analyze options]
+                                    [--poll 30]
+  (analyze without --ckpt evaluates every checkpoint/*.pt)
 """
 import argparse
+import csv
 import json
 import pickle
 import shutil
@@ -56,7 +63,8 @@ import numpy as np
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
-from heavyhex_circuits.heavyhex_37q import ALL_PHYS, validate_backend  # noqa: E402
+from heavyhex_circuits.heavyhex_37q import (  # noqa: E402
+    ALL_PHYS, validate_backend, embedding_for)
 from heavyhex_circuits.heavyhex_depth7_opt_for_37q import (  # noqa: E402
     HeavyHex37QDepthOpt, check_values, N_CHECKS)
 from heavyhex_circuits.fetch_coupling import fetch  # noqa: E402
@@ -66,6 +74,7 @@ from dataset_generation.heavyhex33_stim import (  # noqa: E402
     check_matrix_from_dict, syndrome_tensor, logical_label, ACTIVE_NOISE)
 
 RUNS_DIR = _ROOT / "hardware" / "runs"
+RESULTS_HW_DIR = _ROOT / "results" / "hardware"
 
 
 def load_keys():
@@ -141,10 +150,12 @@ def cmd_submit(args):
     # 2) hardware circuit
     qc = HeavyHex37QDepthOpt(args.cycles).build_circuit()
 
-    # 3) transpile with the fixed physical layout, then insert DD
+    # 3) transpile with the fixed physical layout (patch labels mapped to
+    #    this backend's device qubits), then insert DD
     service = get_service(keys)
     backend = service.backend(args.backend)
-    tqc = transpile(qc, backend=backend, initial_layout=ALL_PHYS,
+    layout = [embedding_for(args.backend)[p] for p in ALL_PHYS]
+    tqc = transpile(qc, backend=backend, initial_layout=layout,
                     optimization_level=1)
     tqc = apply_dd(tqc, backend.target, sequence=args.dd)
     print(f"transpiled+DD({args.dd}): depth={tqc.depth()}, "
@@ -171,6 +182,7 @@ def cmd_submit(args):
     meta = {"job_id": job.job_id() if job else None,
             "backend": args.backend, "cycles": args.cycles,
             "shots": args.shots, "dd": args.dd,
+            "initial_layout": layout,
             "submitted_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "dry_run": args.dry_run,
             "transpiled_depth": tqc.depth(),
@@ -182,6 +194,26 @@ def cmd_submit(args):
         print(f"submitted: job_id={job.job_id()}")
         print(f"next: python hardware/run_hw.py analyze "
               f"--job-id {job.job_id()} --ckpt <checkpoint.pt>")
+    return job
+
+
+def wait_for_job(job, poll=30):
+    """Poll until the job reaches a final state, printing state changes.
+    Returns on DONE; exits on ERROR/CANCELLED."""
+    last = None
+    while True:
+        status = job.status()
+        name = getattr(status, "name", status)  # enum (old) or str (new)
+        if name != last:
+            print(f"[{time.strftime('%H:%M:%S')}] "
+                  f"job {job.job_id()}: {name}")
+            last = name
+        if name == "DONE":
+            return
+        if name in ("ERROR", "CANCELLED"):
+            sys.exit(f"job {job.job_id()} ended as {name} — "
+                     f"nothing to analyze.")
+        time.sleep(poll)
 
 
 def fetch_raw(args):
@@ -201,6 +233,7 @@ def fetch_raw(args):
     keys = load_keys()
     service = get_service(keys)
     job = service.job(args.job_id)
+    wait_for_job(job, poll=getattr(args, "poll", 30))
     cycles = args.cycles
     meta_path = run_dir / "job.json"
     if meta_path.exists():
@@ -209,7 +242,7 @@ def fetch_raw(args):
     # order='little' -> column i is clbit i, i.e. syn bit cyc*16+j and
     # dat bit i in DATA_PHYS order — exactly the check_values() layout
     syn = res.data["syn"].to_bool_array(order="little").astype(np.uint8)
-    dat = res.data["dat"].to_bool_array(order="little").astype(np.uint8)
+    dat = res.data["data"].to_bool_array(order="little").astype(np.uint8)
     run_dir.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(run_dir / "raw.npz", syn=syn, dat=dat, cycles=cycles)
     print(f"saved raw results -> {run_dir / 'raw.npz'}")
@@ -241,33 +274,88 @@ def cmd_analyze(args):
     rows.append(("MWPM", mwpm_ler_from_hardware(check_mat, dat, cycles,
                                                 matching)))
 
-    # CNN
+    # CNN: a single --ckpt, or every checkpoint/*.pt if none was given
     if args.ckpt:
+        ckpts = [Path(args.ckpt)]
+    else:
+        ckpts = sorted((_ROOT / "checkpoint").glob("*.pt"))
+        if not ckpts:
+            print("(no --ckpt and no checkpoint/*.pt: skipping CNN)")
+    if ckpts:
         import torch
         if args.solution:
             from solutions.cnn_solution import HeavyHexCNN
         else:
             from model.cnn_skeleton import HeavyHexCNN
-        ckpt = torch.load(args.ckpt, map_location="cpu", weights_only=False)
-        model = HeavyHexCNN(in_channels=2 * cycles)
-        model.load_state_dict(ckpt["model_state_dict"])
-        model.eval()
-        tensor = syndrome_tensor(check_mat, cycles)
-        preds = []
-        with torch.no_grad():
-            for i in range(0, shots, 8192):
-                xb = torch.from_numpy(tensor[i:i + 8192])
-                _, ll = model(xb)
-                preds.append((ll.numpy().ravel() > 0).astype(np.uint8))
-        pred = np.concatenate(preds)
         from evaluation.metrics import ler
-        rows.append((f"CNN ({Path(args.ckpt).name})", ler(pred, y_logical)))
-    else:
-        print("(no --ckpt given: skipping CNN)")
+        tensor = syndrome_tensor(check_mat, cycles)
+        for ckpt_path in ckpts:
+            ckpt = torch.load(ckpt_path, map_location="cpu",
+                              weights_only=False)
+            model = HeavyHexCNN(in_channels=2 * cycles)
+            model.load_state_dict(ckpt["model_state_dict"])
+            model.eval()
+            preds = []
+            with torch.no_grad():
+                for i in range(0, shots, 8192):
+                    xb = torch.from_numpy(tensor[i:i + 8192])
+                    _, ll = model(xb)
+                    preds.append((ll.numpy().ravel() > 0).astype(np.uint8))
+            pred = np.concatenate(preds)
+            rows.append((f"CNN ({ckpt_path.name})", ler(pred, y_logical)))
 
-    print(f"\n{'decoder':<40} {'LER':>8}")
+    print(f"\n{'decoder':<55} {'LER':>8}")
     for name, v in rows:
-        print(f"{name:<40} {v:>8.4f}")
+        print(f"{name:<55} {v:>8.4f}")
+
+    # persist the report next to the training results
+    run_id = args.job_id or Path(args.npz).resolve().parent.name
+    RESULTS_HW_DIR.mkdir(parents=True, exist_ok=True)
+    csv_path = RESULTS_HW_DIR / f"hw_{run_id}.csv"
+    with open(csv_path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["decoder", "ler", "shots", "cycles", "run_id"])
+        for name, v in rows:
+            w.writerow([name, f"{v:.6f}", shots, cycles, run_id])
+    print(f"saved -> {csv_path}")
+
+
+def cmd_all(args):
+    job = cmd_submit(args)
+    if args.dry_run:
+        print("--dry-run: skipping wait/analyze.")
+        return
+    args.job_id = job.job_id()
+    args.npz = None
+    wait_for_job(job, poll=args.poll)
+    cmd_analyze(args)
+
+
+def _submit_opts(p):
+    p.add_argument("--backend", default="ibm_yonsei",
+                   help="ibm_yonsei (default) or ibm_boston")
+    p.add_argument("--cycles", type=int, default=3)
+    p.add_argument("--shots", type=int, default=50_000)
+    p.add_argument("--dd", default="XX4",
+                   choices=["XX2", "XX4", "XY4", "XY8"],
+                   help="DD sequence (XX4 default; Heron has no native Y)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="do everything except the actual submission")
+
+
+def _analyze_opts(p, cycles=True):
+    if cycles:
+        p.add_argument("--cycles", type=int, default=3,
+                       help="fallback if job metadata is missing")
+    p.add_argument("--ckpt", default=None,
+                   help="trained CNN checkpoint (.pt); omit to evaluate "
+                        "every checkpoint/*.pt")
+    p.add_argument("--solution", action="store_true",
+                   help="load the model class from solutions/ instead of "
+                        "model/cnn_skeleton.py")
+    p.add_argument("--mwpm-profile", default=ACTIVE_NOISE[0],
+                   help="noise profile used for the MWPM DEM weights")
+    p.add_argument("--mwpm-p", type=float, default=0.005)
 
 
 def main():
@@ -275,31 +363,22 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("submit", help="build, transpile, apply DD and submit")
-    s.add_argument("--backend", default="ibm_yonsei",
-                   help="ibm_yonsei (default) or ibm_boston")
-    s.add_argument("--cycles", type=int, default=3)
-    s.add_argument("--shots", type=int, default=50_000)
-    s.add_argument("--dd", default="XX4",
-                   choices=["XX2", "XX4", "XY4", "XY8"],
-                   help="DD sequence (XX4 default; Heron has no native Y)")
-    s.add_argument("--dry-run", action="store_true",
-                   help="do everything except the actual submission")
+    _submit_opts(s)
     s.set_defaults(func=cmd_submit)
 
     a = sub.add_parser("analyze", help="fetch results, decode, report LER")
     a.add_argument("--job-id", default=None)
     a.add_argument("--npz", default=None,
                    help="previously saved raw npz (offline re-analysis)")
-    a.add_argument("--cycles", type=int, default=3,
-                   help="fallback if job metadata is missing")
-    a.add_argument("--ckpt", default=None, help="trained CNN checkpoint (.pt)")
-    a.add_argument("--solution", action="store_true",
-                   help="load the model class from solutions/ instead of "
-                        "model/cnn_skeleton.py")
-    a.add_argument("--mwpm-profile", default=ACTIVE_NOISE[0],
-                   help="noise profile used for the MWPM DEM weights")
-    a.add_argument("--mwpm-p", type=float, default=0.005)
+    _analyze_opts(a)
     a.set_defaults(func=cmd_analyze)
+
+    al = sub.add_parser("all", help="submit, wait for the job, then analyze")
+    _submit_opts(al)
+    _analyze_opts(al, cycles=False)   # submit already owns --cycles
+    al.add_argument("--poll", type=int, default=30,
+                    help="job status poll interval in seconds")
+    al.set_defaults(func=cmd_all)
 
     args = ap.parse_args()
     if args.cmd == "analyze" and not (args.job_id or args.npz):

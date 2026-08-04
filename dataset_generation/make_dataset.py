@@ -35,6 +35,8 @@ Usage:
   python dataset_generation/make_dataset.py --smoke     # quick smoke (10k/2k)
   python dataset_generation/make_dataset.py             # full KCS grid (default shots)
   python dataset_generation/make_dataset.py -n realistic/dp0.001_mf0.01_rf0.01_gd0.008 -p 0.01
+  python dataset_generation/make_dataset.py --config train_sweep.json
+      # every (noise, p, type, cycles) combo the sweep config needs
 """
 import argparse
 import os
@@ -47,6 +49,7 @@ import numpy as np
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
+from dataset_generation import load_options, load_sweep  # noqa: E402
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     build_stim_circuit, sample_flips, syndrome_tensor, logical_label,
     noise_tag, DISTANCE, ERROR_TYPES, ERROR_RATES, ACTIVE_NOISE,
@@ -74,7 +77,48 @@ def parse_args():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--smoke", action="store_true",
                     help="smoke test: train 10k / test 2k")
-    return ap.parse_args()
+    ap.add_argument("--config", default=None,
+                    help="sweep-config JSON; generates every (noise, p, "
+                         "type, cycles) combo the sweep needs. Defaults "
+                         "to train_sweep.json at the repo root when no "
+                         "selection args (-n/-p/-e/--smoke) are given; "
+                         "'none' disables")
+    # train_options.json (repo root, if present) replaces the hardcoded
+    # defaults (e.g. train/test sample counts); explicit CLI args still win
+    opts = load_options("dataset")
+    if opts:
+        ap.set_defaults(**opts)
+        print(f"train_options.json: {opts}")
+    args = ap.parse_args()
+    # auto-sweep: no explicit config and no explicit selection -> pick up
+    # the default sweep file if it exists
+    if args.config == "none":
+        args.config = None
+    elif args.config is None and not (args.noise or args.rates
+                                      or args.error_types or args.smoke):
+        default_sweep = _ROOT / "train_sweep.json"
+        if default_sweep.exists():
+            args.config = str(default_sweep)
+    return args
+
+
+def sweep_combos(args):
+    """Resolve the (noise, p, error_type, cycles) combos to generate."""
+    if args.config:
+        combos = []
+        for run in load_sweep(args.config):
+            for n in run.get("noise") or ACTIVE_NOISE:
+                for p in run.get("rates") or ERROR_RATES:
+                    for et in run.get("error_types") or ERROR_TYPES:
+                        c = (n, p, et, run.get("cycles", args.cycles))
+                        if c not in combos:
+                            combos.append(c)
+        return combos
+    noises = args.noise if args.noise else ACTIVE_NOISE
+    rates = args.rates if args.rates else ERROR_RATES
+    etypes = args.error_types if args.error_types else ERROR_TYPES
+    return [(n, p, et, args.cycles)
+            for n in noises for p in rates for et in etypes]
 
 
 def generate_split(circuit, num_cycles, total, seed, desc):
@@ -102,18 +146,20 @@ def generate_split(circuit, num_cycles, total, seed, desc):
 
 def main():
     args = parse_args()
-    noises = args.noise if args.noise else ACTIVE_NOISE
-    rates = args.rates if args.rates else ERROR_RATES
-    etypes = args.error_types if args.error_types else ERROR_TYPES
+    combos = sweep_combos(args)
     n_train = 10_000 if args.smoke else args.train_samples
     n_test = 2_000 if args.smoke else args.test_samples
     outdir = Path(args.outdir)
 
     print("=== (3,3) dataset generation ===")
-    print(f"noise={noises}\nrates={rates} types={etypes} cycles={args.cycles}")
+    if args.config:
+        print(f"sweep: {args.config}")
+    print(f"{len(combos)} combo(s) (noise, p, type, cycles):")
+    for c in combos:
+        print(f"   {c}")
     print(f"train={n_train:,} test={n_test:,} -> {outdir}")
 
-    for noise in noises:
+    for noise, p, et, cycles in combos:
         if noise not in NOISE_PROFILES:
             print(f"WARNING: unknown noise profile '{noise}', skipping")
             continue
@@ -121,39 +167,37 @@ def main():
         # e.g. dataset/dp0.001_mf0.01_rf0.01_gd0.008/
         ndir = outdir / noise_tag(noise)
         ndir.mkdir(parents=True, exist_ok=True)
-        for p in rates:
-            for et in etypes:
-                circuit = build_stim_circuit(args.cycles, et, p, noise)
-                for split, n, seed_off in (("train", n_train, 0),
-                                           ("test", n_test, 1)):
-                    fname = ndir / (f"{split}_d{DISTANCE}_c{args.cycles}"
-                                    f"_p{p}_{et}.npz")
-                    if fname.exists():
-                        print(f"   skip (exists): {fname}")
-                        continue
-                    print(f"   >>> {noise} p={p} {et} [{split}]")
-                    # independent train/test seeds (KCS generates the two
-                    # files separately, i.e. independent samples)
-                    seed = args.seed * 1000 + hash((noise, p, et)) % 10007 + seed_off
-                    f, l, y = generate_split(circuit, args.cycles, n,
-                                             seed & 0x7FFFFFFF, split)
-                    # atomic write: dump to a temp file, then rename. A
-                    # crashed/concurrent run can never leave a half-written
-                    # npz under the final name (the exists-skip above would
-                    # otherwise trust it and training would hit BadZipFile).
-                    tmp = fname.with_name(f".{fname.name}.{os.getpid()}.tmp")
-                    try:
-                        with open(tmp, "wb") as fh:
-                            np.savez_compressed(
-                                fh, features=f, labels=l, logical_labels=y,
-                                num_cycles=args.cycles, noise_profile=noise,
-                                error_rate=p, error_type=et)
-                        tmp.replace(fname)
-                    finally:
-                        tmp.unlink(missing_ok=True)
-                    ler0 = float(y.mean())
-                    print(f"      saved {fname.name}: features{f.shape}, "
-                          f"raw logical-flip rate={ler0:.4f}")
+        circuit = build_stim_circuit(cycles, et, p, noise)
+        for split, n, seed_off in (("train", n_train, 0),
+                                   ("test", n_test, 1)):
+            fname = ndir / (f"{split}_d{DISTANCE}_c{cycles}"
+                            f"_p{p}_{et}.npz")
+            if fname.exists():
+                print(f"   skip (exists): {fname}")
+                continue
+            print(f"   >>> {noise} p={p} {et} c={cycles} [{split}]")
+            # independent train/test seeds (KCS generates the two
+            # files separately, i.e. independent samples)
+            seed = args.seed * 1000 + hash((noise, p, et)) % 10007 + seed_off
+            f, l, y = generate_split(circuit, cycles, n,
+                                     seed & 0x7FFFFFFF, split)
+            # atomic write: dump to a temp file, then rename. A
+            # crashed/concurrent run can never leave a half-written
+            # npz under the final name (the exists-skip above would
+            # otherwise trust it and training would hit BadZipFile).
+            tmp = fname.with_name(f".{fname.name}.{os.getpid()}.tmp")
+            try:
+                with open(tmp, "wb") as fh:
+                    np.savez_compressed(
+                        fh, features=f, labels=l, logical_labels=y,
+                        num_cycles=cycles, noise_profile=noise,
+                        error_rate=p, error_type=et)
+                tmp.replace(fname)
+            finally:
+                tmp.unlink(missing_ok=True)
+            ler0 = float(y.mean())
+            print(f"      saved {fname.name}: features{f.shape}, "
+                  f"raw logical-flip rate={ler0:.4f}")
     print("=== done ===")
 
 

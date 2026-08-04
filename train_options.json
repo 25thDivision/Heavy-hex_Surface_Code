@@ -1,0 +1,17 @@
+{
+  "cycles": 3,
+  "train": {
+    "epochs": 30,
+    "patience": 5,
+    "batch_size": 2048,
+    "lr": 0.001,
+    "aux_weight": 0.5,
+    "pos_weight": "none",
+    "mwpm": false
+  },
+  "dataset": {
+    "train_samples": 10000000,
+    "test_samples": 100000,
+    "seed": 0
+  }
+}

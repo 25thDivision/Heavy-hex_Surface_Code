@@ -29,7 +29,7 @@ Stim 시뮬레이션 → CNN 디코더 학습 → MWPM 기준선 → IBM QPU 검
 
 ### Results
 
-- 학습 곡선 (`results/`에 쌓이는 epoch별 CSV를 플롯하면 됌)
+- 학습 곡선 (`results/train/`에 쌓이는 epoch별 CSV를 플롯하면 됌)
 - config별 best 모델의 검증 **ECR / LER**
 - **MWPM 대비표** (`train.py --mwpm`이 표로 출력해줘)
 - (QPU 접근이 가능하면) `hardware/run_hw.py analyze`의 QPU LER 리포트
@@ -53,8 +53,9 @@ python verification/verify_equivalence.py
 
 # 1) 데이터셋 생성
 python dataset_generation/make_dataset.py --smoke   # 빠른 확인용
-python dataset_generation/make_dataset.py           # 전체 그리드 (용량/시간 꽤 큼)
-#    작게 줄이고 싶으면 예:
+python dataset_generation/make_dataset.py           # train_sweep.json 있으면 그 조합,
+                                                    # 없으면 전체 그리드 (용량/시간 꽤 큼)
+#    작게 줄이고 싶으면 예 (기본 샘플 수는 train_options.json의 dataset 섹션으로도 조절 가능):
 python dataset_generation/make_dataset.py -n realistic/dp0.001_mf0.01_rf0.01_gd0.008 \
        -p 0.005 --train-samples 1000000 --test-samples 100000
 
@@ -62,6 +63,8 @@ python dataset_generation/make_dataset.py -n realistic/dp0.001_mf0.01_rf0.01_gd0
 python train.py --smoke                        # end-to-end 확인
 python train.py -n realistic/dp0.001_mf0.01_rf0.01_gd0.008 -p 0.005 --mwpm
 python train.py --all --mwpm                   # 전체 그리드 + 기준선 표
+python train.py                                # train_sweep.json 있으면 자동 스윕
+python train.py --config none                  # 스윕 끄고 기본 단일 설정
 
 # 3) MWPM 기준선 표만 따로 보고 싶을 때
 python baseline/mwpm.py
@@ -69,9 +72,30 @@ python baseline/mwpm.py
 # 4) QPU 검증 (keys.json 필요, 5. 참고)
 python hardware/run_hw.py submit --backend ibm_yonsei --dry-run   # 리허설
 python hardware/run_hw.py submit --backend ibm_yonsei             # 실제 제출
+python hardware/run_hw.py analyze --job-id <ID>   # checkpoint/*.pt 전부 평가
 python hardware/run_hw.py analyze --job-id <ID> \
        --ckpt checkpoint/CNN_d3_c3_p0.005_dp0.001_mf0.01_rf0.01_gd0.008.pt
+python hardware/run_hw.py all                     # 제출→완료 대기→분석 원샷
 ```
+
+analyze는 잡이 아직 안 끝났으면 알아서 폴링하며 기다렸다가 진행해.
+
+### 설정 파일 두 개 (repo 루트)
+
+- **[train_options.json](train_options.json)** — *기본값* 조절: `train` 섹션은
+  학습 하이퍼파라미터(epochs, batch_size, lr, ...), `dataset` 섹션은
+  데이터셋 샘플 수(train_samples/test_samples), 최상위 `cycles`는 양쪽 공용.
+  파일이 있으면 train.py / make_dataset.py가 자동으로 읽어 기본값을
+  대체하고, CLI 인자를 명시하면 그쪽이 이겨.
+- **[train_sweep.json](train_sweep.json)** — *스윕* 정의: `runs`의 각 항목이
+  (노이즈, p, error_type + 하이퍼파라미터 오버라이드) 한 벌이야.
+  repo 루트에 이 파일이 있으면 make_dataset.py는 필요한 조합의 데이터셋을,
+  train.py는 항목별 학습을 **자동으로** 돌려. 선택 인자(-n/-p/-e/--all/
+  --smoke)를 명시하면 스윕 대신 그쪽이 돌고, `--config none`으로 끄거나
+  `--config 다른파일.json`으로 바꿀 수 있어. 같은 (노이즈, p, cycles)의
+  하이퍼파라미터 변형에는 `"name"`을 줘서 결과 파일 이름을 구분해.
+
+우선순위: `train_options.json` < CLI 인자 < 스윕 run 항목.
 
 ### 산출물이 저장되는 위치
 
@@ -79,11 +103,13 @@ python hardware/run_hw.py analyze --job-id <ID> \
   (예: `dataset/dp0.001_mf0.01_rf0.01_gd0.008/train_d3_c3_p0.005_X.npz`;
    `d3` = code distance (dx/dz 중 큰 값; (3,3)은 3, (3,5)/(5,3)이면 5),
    `c3` = QEC cycle 수 3)
-- 학습 로그: `results/CNN_d3_c<cycles>_p<p>_<노이즈태그>.csv`
+- 학습 로그: `results/train/CNN_d3_c<cycles>_p<p>_<노이즈태그>.csv`
 - 체크포인트: `checkpoint/CNN_d3_c<cycles>_p<p>_<노이즈태그>.pt`
   (epoch마다 검증 LER을 재서 **최저 val LER**일 때만 갱신돼)
 - QPU 런: `hardware/runs/<job_id>/` — raw 결과와 함께 그 시점의 QPU
   환경 기록(캘리브레이션 스냅샷, 제출한 회로 등)이 통째로 남아
+- QPU LER 리포트: `results/hardware/hw_<job_id>.csv`
+  (`hardware/run_hw.py analyze`가 표로 출력한 내용을 저장)
 
 ## 4. 규약으로 고정된 부분 (건드리지 말 것)
 
@@ -131,6 +157,12 @@ cp keys.example.json keys.json     # 그리고 네 거로 적으면 됨
 말 것.** 기본 백엔드는 `ibm_yonsei`이고, `--backend ibm_boston`으로 바꿀 수
 있어. 일단 `ibm_yonsei` 해보고 결과가 도저히 안 나오면 `ibm_boston`으로 해 볼 것~
 
+백엔드별 37q 패치의 물리 큐빗 임베딩은
+`heavyhex_circuits/heavyhex_37q.py`의 `EMBEDDINGS`에 등록돼 있어
+(boston/aachen/pittsburgh는 Heron 번호 그대로, yonsei는 Eagle r3 레이아웃
+매핑). `validate_backend`가 임베딩을 자동 선택해서 커플링을 검사하고,
+목록에 없는 백엔드는 매핑을 추가하라는 에러가 나.
+
 ## 6. Slurm (서버)
 
 sbatch 스크립트는 repo 루트에 두 개 있어 (파티션은 서버의 `main`으로 이미
@@ -142,10 +174,20 @@ sbatch 스크립트는 repo 루트에 두 개 있어 (파티션은 서버의 `ma
 # 학습만 (데이터셋이 이미 있을 때)
 sbatch train.sbatch --all --mwpm            # 인자는 train.py로 그대로 전달돼
 
-# 통합 파이프라인: 규약 게이트 -> 데이터셋 생성 -> 학습
+# 통합 파이프라인: 규약 게이트 -> 데이터셋 생성 -> 학습 -> QPU 검증
 sbatch pipeline.sbatch --all --mwpm
 DATASET_ARGS="--smoke" sbatch pipeline.sbatch --smoke   # 빠른 end-to-end 확인
+# train_sweep.json이 있으면 데이터셋 생성+학습이 자동으로 스윕을 돈다:
+SWEEP_CONFIG=다른스윕.json sbatch pipeline.sbatch       # 다른 스윕 파일 지정
+SWEEP_CONFIG=none sbatch pipeline.sbatch                # 스윕 끄기
+HW_ARGS="--dry-run" sbatch pipeline.sbatch              # QPU 단계는 리허설만
+SKIP_HW=1 sbatch pipeline.sbatch                        # QPU 단계 끄기
 ```
+
+QPU 단계는 keys.json이 있을 때만 돌고, `hardware/run_hw.py all`
+(제출→대기→분석)을 실행해 — **실제 QPU 잡이 제출되니** 반복 제출을
+원치 않으면 `SKIP_HW=1`을 쓸 것. HW_ARGS로 `--backend`, `--shots` 등을
+넘길 수 있어.
 
 이미 생성된 데이터셋 파일은 make_dataset.py가 알아서 건너뛰니까
 pipeline.sbatch를 다시 제출해도 데이터 생성이 중복되지 않아.
@@ -158,7 +200,8 @@ pipeline.sbatch는 flock으로 중복 실행을 차단해 — 파이프라인 jo
 ```
 heavyhex_circuits/      고정된 회로 자산 (재작성하지 말고 import해서 쓸 것)
   heavyhex_37q.py                 (3,3) 코드 정의: CHECK_DEFS, DATA_PHYS,
-                                  LOGICAL_Z, check_values, validate_backend
+                                  LOGICAL_Z, check_values, validate_backend,
+                                  EMBEDDINGS (백엔드별 큐빗 임베딩)
   heavyhex_depth7_opt_for_37q.py  최적화된 depth-7 QPU 회로
                                   (HeavyHex37QDepthOpt, CYCLE_ORDER)
   heavyhex_general.py / heavyhex_depth_opt.py / diamond_generator.py
@@ -173,10 +216,14 @@ model/                  채워야 할 파일 (cnn_skeleton.py) + 데이터 로�
 evaluation/             ECR / LER 지표
 baseline/               MWPM (PyMatching) 기준선
 train.py                학습 진입점 (완성본, 수정할 필요 없어)
+train_options.json      기본 하이퍼파라미터 / 데이터셋 샘플 수 (자동 적용, §3)
+train_sweep.json        스윕 정의 — 있으면 자동 적용, --config none으로 끔 (§3)
 train.sbatch            slurm 학습 job (§6)
-pipeline.sbatch         slurm 통합 파이프라인: 게이트 -> 데이터셋 -> 학습 (§6)
+pipeline.sbatch         slurm 통합 파이프라인:
+                        게이트 -> 데이터셋 -> 학습 -> QPU 검증 (§6)
 slurm_logs/             slurm job 로그 (내용물은 gitignore)
 hardware/               IBM 제출 + 분석 파이프라인 (runs/에 런별 기록)
+results/                train/ 학습 CSV, hardware/ QPU LER CSV (gitignore)
 ```
 
 QPU 회로 흐름 (원본 저장소 README에서): `fetch_coupling` →

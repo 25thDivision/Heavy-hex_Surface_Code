@@ -1,0 +1,11 @@
+{
+  "defaults": {"cycles": 3},
+  "runs": [
+    {"noise": "realistic/dp0.001_mf0.01_rf0.01_gd0.008",
+     "rates": [0.005, 0.01, 0.05]},
+    {"noise": "realistic/dp0.005_mf0.02_rf0.02_gd0.015",
+     "rates": [0.005, 0.01, 0.05]},
+    {"noise": "realistic/dp0.01_mf0.05_rf0.05_gd0.01",
+     "rates": [0.005, 0.01, 0.05]}
+  ]
+}

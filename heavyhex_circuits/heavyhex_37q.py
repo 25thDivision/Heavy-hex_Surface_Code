@@ -180,18 +180,61 @@ def required_edges():
     return [tuple(sorted(e)) for e in need]
 
 
+# Patch label -> device qubit, per backend NAME (not processor family:
+# even same-processor devices can differ, so each backend is listed).
+# The circuit itself lives on local indices (L); physical labels only matter
+# in validate_backend() and in transpile's initial_layout, so re-targeting a
+# backend is just a new entry here.
+_IDENTITY = {p: p for p in ALL_PHYS}          # Heron numbering (q25-q107)
+_YONSEI = {25: 24, 37: 34, 56: 53, 57: 54,    # Eagle r3, 127q
+           76: 71, 77: 72, 78: 73, 96: 91, 97: 92}
+_YONSEI.update({p: p - 2 for p in range(43, 48)})     # row2
+_YONSEI.update({p: p - 3 for p in range(61, 70)})     # row3
+_YONSEI.update({p: p - 4 for p in range(81, 90)})     # row4
+_YONSEI.update({p: p - 5 for p in range(103, 108)})   # row5
+
+EMBEDDINGS = {
+    'ibm_boston': _IDENTITY,
+    'ibm_aachen': _IDENTITY,
+    'ibm_pittsburgh': _IDENTITY,
+    'ibm_yonsei': _YONSEI,
+}
+
+
+def embedding_for(backend_name):
+    """Return the patch-label -> device-qubit map for a backend."""
+    try:
+        return EMBEDDINGS[backend_name]
+    except KeyError:
+        raise RuntimeError(
+            f"no 37q-patch embedding registered for backend "
+            f"'{backend_name}'. Known backends: {sorted(EMBEDDINGS)}. "
+            f"To add one, put a patch-label -> device-qubit dict into "
+            f"EMBEDDINGS in heavyhex_circuits/heavyhex_37q.py (identity "
+            f"if the device uses the Heron q25-q107 numbering) and check "
+            f"it with validate_backend on the device's coupling JSON.")
+
+
 def validate_backend(coupling_json_path, raise_on_fail=True):
-    """Verify the hardcoded q25-q107 patch exists on the given backend.
+    """Verify the 37q patch fits the given backend under its registered
+    embedding (selected by the 'name' field of the coupling JSON).
     Call this FIRST in any pipeline before building 37q circuits.
-    Returns [] if valid, else the list of missing edges."""
+    Returns [] if valid, else the list of missing
+    (patch_edge, device_edge) pairs."""
     import json
     cm = json.load(open(coupling_json_path))
+    emb = embedding_for(cm.get('name', '?'))
     edges = {tuple(sorted(e)) for e in cm['coupling_map']}
-    missing = [e for e in required_edges() if e not in edges]
+    missing = []
+    for u, v in required_edges():
+        dev = tuple(sorted((emb[u], emb[v])))
+        if dev not in edges:
+            missing.append(((u, v), dev))
     if missing and raise_on_fail:
         raise RuntimeError(
-            f"backend '{cm.get('name', '?')}' lacks {len(missing)} edges "
-            f"required by the 37q patch: {missing}")
+            f"backend '{cm.get('name', '?')}' lacks {len(missing)} device "
+            f"edges required by the 37q patch "
+            f"(patch edge -> device edge): {missing}")
     return missing
 
 if __name__ == '__main__':

@@ -15,7 +15,26 @@ Usage:
   python train.py --smoke                    # quick end-to-end check
   python train.py -n realistic/dp0.001_mf0.01_rf0.01_gd0.008 -p 0.005
   python train.py --all                      # full KCS grid
+  python train.py --config train_sweep.json  # JSON-driven sweep (see below)
   python train.py --solution ...             # reference model, if you have solutions/
+
+Options file (train_options.json at the repo root, auto-loaded when it
+exists): replaces the hardcoded defaults — "train" section for the
+hyperparameters here, "dataset" section for make_dataset.py's sample
+counts, top-level "cycles" shared by both. Explicit CLI arguments still
+override it, and sweep run entries override both.
+
+Sweep config: a JSON of {"defaults": {...}, "runs": [{...}]}. If
+train_sweep.json exists at the repo root it is used automatically —
+unless you pass --config, select explicitly with -n/-p/-e/--all/--smoke,
+or disable with --config none.
+Each run entry may set noise / rates / error_types plus hyperparameter
+overrides (cycles, epochs, patience, batch_size, lr, aux_weight,
+pos_weight, mwpm) and an optional "name" appended to the result/checkpoint
+tag (use it when two runs share the same noise/p/cycles, or their files
+would overwrite each other). Keys a run omits fall back to the CLI
+arguments. make_dataset.py --config takes the same file to generate the
+matching datasets.
 """
 import argparse
 import csv
@@ -30,6 +49,7 @@ import torch.optim as optim
 _ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(_ROOT))
 
+from dataset_generation import load_options  # noqa: E402
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     noise_tag, DISTANCE, ERROR_RATES, ERROR_TYPES, ACTIVE_NOISE)
 from model.data import load_split, FastTensorDataLoader  # noqa: E402
@@ -51,7 +71,7 @@ def parse_args():
                     help="run the full KCS grid (all active noise x rates)")
     ap.add_argument("--cycles", type=int, default=3)
     ap.add_argument("--data-dir", default=str(_ROOT / "dataset"))
-    ap.add_argument("--outdir", default=str(_ROOT / "results"))
+    ap.add_argument("--outdir", default=str(_ROOT / "results" / "train"))
     ap.add_argument("--ckpt-dir", default=str(_ROOT / "checkpoint"))
     ap.add_argument("--epochs", type=int, default=MAX_EPOCHS)
     ap.add_argument("--patience", type=int, default=PATIENCE)
@@ -72,7 +92,29 @@ def parse_args():
                          "(not part of the distributed repo)")
     ap.add_argument("--smoke", action="store_true",
                     help="single config, 3 epochs, tiny batch count")
-    return ap.parse_args()
+    ap.add_argument("--config", default=None,
+                    help="sweep-config JSON: loop training over its run "
+                         "entries. Defaults to train_sweep.json at the "
+                         "repo root when no selection args (-n/-p/-e/"
+                         "--all/--smoke) are given; 'none' disables")
+    # train_options.json (repo root, if present) replaces the hardcoded
+    # defaults; explicit CLI arguments and sweep entries still win
+    opts = load_options("train")
+    if opts:
+        ap.set_defaults(**opts)
+        print(f"train_options.json: {opts}")
+    args = ap.parse_args()
+    # auto-sweep: no explicit config and no explicit selection -> pick up
+    # the default sweep file if it exists
+    if args.config == "none":
+        args.config = None
+    elif args.config is None and not (args.noise or args.rates
+                                      or args.error_types or args.all
+                                      or args.smoke):
+        default_sweep = _ROOT / "train_sweep.json"
+        if default_sweep.exists():
+            args.config = str(default_sweep)
+    return args
 
 
 def ensure_coupling_json(backend="ibm_yonsei"):
@@ -162,10 +204,12 @@ def train_one(args, mod, noise, p, et, device):
             w = float(np.sqrt(w))
         pos_weight = torch.full((17,), w, device=device)
 
-    # flat layout: results/CNN_d3_c3_p0.005_dp0.001_mf0.01_rf0.01_gd0.008.csv
+    # flat layout: results/train/CNN_d3_c3_p0.005_dp0.001_..._gd0.008.csv
     # (d = code distance, c = number of QEC cycles; the error type is
     #  omitted since the KCS grid is X-only)
     tag = f"d{DISTANCE}_c{args.cycles}_p{p}_{noise_tag(noise)}"
+    if getattr(args, "run_name", ""):
+        tag += f"_{args.run_name}"
     result_dir = Path(args.outdir)
     ckpt_dir = Path(args.ckpt_dir)
     result_dir.mkdir(parents=True, exist_ok=True)
@@ -230,33 +274,52 @@ def train_one(args, mod, noise, p, et, device):
     return row
 
 
+def expand_config(args):
+    """--config JSON -> one args namespace per run entry."""
+    from dataset_generation import load_sweep
+    run_list = []
+    for run in load_sweep(args.config):
+        ra = argparse.Namespace(**vars(args))
+        ra.run_name = run.pop("name", "")
+        for k, v in run.items():
+            setattr(ra, k, v)
+        run_list.append(ra)
+    return run_list
+
+
 def main():
     args = parse_args()
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
-    noises = args.noise or (ACTIVE_NOISE if args.all else [ACTIVE_NOISE[0]])
-    rates = args.rates or (ERROR_RATES if (args.all or not args.smoke)
-                           else [ERROR_RATES[0]])
-    etypes = args.error_types or ERROR_TYPES
-    if args.smoke:
-        args.epochs = min(args.epochs, 3)
-        noises, rates = noises[:1], rates[:1]
+    run_list = expand_config(args) if args.config else [args]
 
     ensure_coupling_json()
     mod = get_model_module(args.solution)
-    print(f"model module: {mod.__name__} | device: {device}")
+    print(f"model module: {mod.__name__} | device: {device}"
+          + (f" | sweep: {args.config} ({len(run_list)} runs)"
+             if args.config else ""))
 
     rows = []
-    for noise in noises:
-        for p in rates:
-            for et in etypes:
-                try:
-                    rows.append(train_one(args, mod, noise, p, et, device))
-                except FileNotFoundError as e:
-                    print(f"    skipped: {e}")
-                except NotImplementedError as e:
-                    print(f"\nERROR: the model is not implemented yet — "
-                          f"you need to fill in model/cnn_skeleton.py ({e})")
-                    sys.exit(1)
+    for ra in run_list:
+        noises = ra.noise or (ACTIVE_NOISE if ra.all else [ACTIVE_NOISE[0]])
+        rates = ra.rates or (ERROR_RATES if (ra.all or not ra.smoke)
+                             else [ERROR_RATES[0]])
+        etypes = ra.error_types or ERROR_TYPES
+        if ra.smoke:
+            ra.epochs = min(ra.epochs, 3)
+            noises, rates = noises[:1], rates[:1]
+
+        for noise in noises:
+            for p in rates:
+                for et in etypes:
+                    try:
+                        rows.append(train_one(ra, mod, noise, p, et, device))
+                    except FileNotFoundError as e:
+                        print(f"    skipped: {e}")
+                    except NotImplementedError as e:
+                        print(f"\nERROR: the model is not implemented yet — "
+                              f"you need to fill in model/cnn_skeleton.py "
+                              f"({e})")
+                        sys.exit(1)
 
     if rows:
         print(f"\n{'=' * 70}\nSummary (best epoch per config)")
