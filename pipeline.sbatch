@@ -34,12 +34,14 @@
 # analyze는 --ckpt 없이 돌므로 checkpoint/*.pt 전부를 평가해
 # results/hardware/hw_<job_id>.csv로 남긴다.
 
-set -euo pipefail
+set -eo pipefail
 
 CONDA_ENV="${CONDA_ENV:-KC2}"    # <-- EDIT: 본인 conda/mamba 환경 이름
                                  #     (또는 CONDA_ENV=이름 sbatch pipeline.sbatch 로 덮어쓰기)
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "$CONDA_ENV"
+
+set -u
 
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 
