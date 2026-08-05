@@ -45,6 +45,8 @@ conda activate "$CONDA_ENV"
 
 set -u
 
+export PYTHONUNBUFFERED=1
+
 cd "${SLURM_SUBMIT_DIR:-$PWD}"
 
 exec 9>/tmp/heavyhex_pipeline.lock

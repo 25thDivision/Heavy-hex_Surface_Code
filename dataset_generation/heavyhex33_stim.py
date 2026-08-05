@@ -50,6 +50,7 @@ Noise model (inherited from KCS):
         reset_flip: X_ERROR right after reset
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -90,23 +91,19 @@ X_POS = [j for j, n in enumerate(CHECK_AT) if n in X_STABS]   # 8 X-check slots
 # ------------------------------------------------------------------
 ERROR_TYPES = ["X"]
 ERROR_RATES = [0.005, 0.01, 0.05]
+
+# noise_profiles.json (repo root) defines every runnable profile; all of them
+# are generated/trained/evaluated by default. The noiseless profile is a
+# fixture for verification/verify_equivalence.py only, so it stays out of the
+# JSON (and out of ALL_NOISE).
+with open(_ROOT / "noise_profiles.json") as _f:
+    _JSON_PROFILES = json.load(_f)
+ALL_NOISE = list(_JSON_PROFILES)
 NOISE_PROFILES = {
     "ideal/dp0_mf0_rf0_gd0": {
         "data_depol": 0.0, "meas_flip": 0.0, "reset_flip": 0.0, "gate_depol": 0.0},
-    "realistic/dp0_mf0.005_rf0.005_gd0.004": {
-        "data_depol": 0.0, "meas_flip": 0.005, "reset_flip": 0.005, "gate_depol": 0.004},
-    "realistic/dp0.001_mf0.01_rf0.01_gd0.008": {
-        "data_depol": 0.001, "meas_flip": 0.01, "reset_flip": 0.01, "gate_depol": 0.008},
-    "realistic/dp0.005_mf0.02_rf0.02_gd0.015": {
-        "data_depol": 0.005, "meas_flip": 0.02, "reset_flip": 0.02, "gate_depol": 0.015},
-    "realistic/dp0.01_mf0.05_rf0.05_gd0.01": {
-        "data_depol": 0.01, "meas_flip": 0.05, "reset_flip": 0.05, "gate_depol": 0.01},
+    **_JSON_PROFILES,
 }
-ACTIVE_NOISE = [
-    "realistic/dp0.001_mf0.01_rf0.01_gd0.008",
-    "realistic/dp0.005_mf0.02_rf0.02_gd0.015",
-    "realistic/dp0.01_mf0.05_rf0.05_gd0.01",
-]
 
 
 def noise_tag(noise_profile):
