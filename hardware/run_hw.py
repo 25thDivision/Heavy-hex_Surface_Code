@@ -41,13 +41,14 @@ Notes:
     under that day's calibration.
 
 Usage:
+  python hardware/run_hw.py         [submit options] [analyze options]
+                                    [--poll 30]   # default = all
   python hardware/run_hw.py submit  [--backend ibm_yonsei] [--shots 50000]
                                     [--cycles 3] [--dd XX4] [--dry-run]
   python hardware/run_hw.py analyze --job-id <ID> [--ckpt checkpoint/CNN_....pt]
   python hardware/run_hw.py analyze --npz hardware/runs/<ID>/raw.npz [--ckpt ...]
-  python hardware/run_hw.py all     [submit options] [analyze options]
-                                    [--poll 30]
-  (analyze without --ckpt evaluates every checkpoint/*.pt)
+  (no subcommand runs all: submit -> wait -> analyze in one go;
+   analyze without --ckpt evaluates every checkpoint/*.pt)
 """
 import argparse
 import csv
@@ -380,7 +381,11 @@ def main():
                     help="job status poll interval in seconds")
     al.set_defaults(func=cmd_all)
 
-    args = ap.parse_args()
+    # 서브커맨드 생략 시 all(제출->대기->분석 원샷)로 동작.
+    argv = sys.argv[1:]
+    if argv[:1] not in (["submit"], ["analyze"], ["all"], ["-h"], ["--help"]):
+        argv.insert(0, "all")
+    args = ap.parse_args(argv)
     if args.cmd == "analyze" and not (args.job_id or args.npz):
         ap.error("analyze requires --job-id or --npz")
     args.func(args)

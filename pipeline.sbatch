@@ -23,7 +23,9 @@
 #   SKIP_HW=1 sbatch pipeline.sbatch                       # QPU 단계 끄기
 #
 # 추가 인자는 train.py로, DATASET_ARGS는 make_dataset.py로,
-# HW_ARGS는 hardware/run_hw.py all(제출->대기->분석 원샷)로 전달돼.
+# HW_ARGS는 hardware/run_hw.py로 전달돼. run_hw.py는 서브커맨드 없이
+# 실행하면 all(제출->대기->분석 원샷)이고, HW_ARGS="analyze --job-id X"
+# 처럼 단계를 명시하면 그 단계만 돈다.
 # 스윕: repo 루트에 train_sweep.json이 있으면 데이터셋 생성과 학습이
 # 자동으로 그 스윕 조합을 돈다 (-n/-p 같은 선택 인자를 주면 그쪽 우선).
 # SWEEP_CONFIG=경로 로 다른 스윕 파일을, =none 으로 비활성화를 지정.
@@ -67,5 +69,5 @@ if [[ "${SKIP_HW:-0}" == "1" ]]; then
 elif [[ ! -f keys.json ]]; then
     echo "keys.json 없음 — QPU 단계 건너뜀 (자격 증명이 있어야 제출 가능)"
 else
-    python hardware/run_hw.py all ${HW_ARGS:-}
+    python hardware/run_hw.py ${HW_ARGS:-}
 fi
