@@ -33,7 +33,7 @@ sys.path.insert(0, str(_ROOT))
 
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     build_stim_circuit, detectors_from_tensor, detectors_from_dataset,
-    noise_tag, DISTANCE, ERROR_RATES, ERROR_TYPES, ACTIVE_NOISE)
+    noise_tag, DISTANCE, ERROR_RATES, ERROR_TYPES, ALL_NOISE)
 from evaluation.metrics import ler  # noqa: E402
 
 
@@ -76,7 +76,7 @@ def mwpm_ler_from_hardware(check_mat, dat, num_cycles, matching):
 
 def main():
     ap = argparse.ArgumentParser(description="MWPM baseline evaluation")
-    ap.add_argument("-n", "--noise", nargs="+", default=ACTIVE_NOISE)
+    ap.add_argument("-n", "--noise", nargs="+", default=ALL_NOISE)
     ap.add_argument("-p", "--rates", nargs="+", type=float, default=ERROR_RATES)
     ap.add_argument("-e", "--error-types", nargs="+", default=ERROR_TYPES)
     ap.add_argument("--cycles", type=int, default=3)

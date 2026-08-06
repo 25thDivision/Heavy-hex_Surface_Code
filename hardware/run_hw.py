@@ -72,7 +72,7 @@ from heavyhex_circuits.fetch_coupling import fetch  # noqa: E402
 from heavyhex_circuits.dd_utils import apply_dd, dd_pulse_stats  # noqa: E402
 
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
-    check_matrix_from_dict, syndrome_tensor, logical_label, ACTIVE_NOISE)
+    check_matrix_from_dict, syndrome_tensor, logical_label, ALL_NOISE)
 
 RUNS_DIR = _ROOT / "hardware" / "runs"
 RESULTS_HW_DIR = _ROOT / "results" / "hardware"
@@ -354,7 +354,7 @@ def _analyze_opts(p, cycles=True):
     p.add_argument("--solution", action="store_true",
                    help="load the model class from solutions/ instead of "
                         "model/cnn_skeleton.py")
-    p.add_argument("--mwpm-profile", default=ACTIVE_NOISE[0],
+    p.add_argument("--mwpm-profile", default=ALL_NOISE[0],
                    help="noise profile used for the MWPM DEM weights")
     p.add_argument("--mwpm-p", type=float, default=0.005)
 

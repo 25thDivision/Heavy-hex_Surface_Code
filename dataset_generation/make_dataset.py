@@ -52,7 +52,7 @@ sys.path.insert(0, str(_ROOT))
 from dataset_generation import load_options, load_sweep  # noqa: E402
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     build_stim_circuit, sample_flips, syndrome_tensor, logical_label,
-    noise_tag, DISTANCE, ERROR_TYPES, ERROR_RATES, ACTIVE_NOISE,
+    noise_tag, DISTANCE, ERROR_TYPES, ERROR_RATES, ALL_NOISE,
     NOISE_PROFILES)
 
 # Inherited from KCS generate_dataset_image.py (d=3 entries)
@@ -64,7 +64,7 @@ CHUNK = 1_000_000
 def parse_args():
     ap = argparse.ArgumentParser(description="(3,3) heavy-hex dataset generator")
     ap.add_argument("-n", "--noise", nargs="+", default=None,
-                    help=f"noise profile names (default: {ACTIVE_NOISE})")
+                    help=f"noise profile names (default: {ALL_NOISE})")
     ap.add_argument("-p", "--rates", nargs="+", type=float, default=None,
                     help=f"Error_Rate list (default: {ERROR_RATES})")
     ap.add_argument("-e", "--error-types", nargs="+", default=None,
@@ -107,14 +107,14 @@ def sweep_combos(args):
     if args.config:
         combos = []
         for run in load_sweep(args.config):
-            for n in run.get("noise") or ACTIVE_NOISE:
+            for n in run.get("noise") or ALL_NOISE:
                 for p in run.get("rates") or ERROR_RATES:
                     for et in run.get("error_types") or ERROR_TYPES:
                         c = (n, p, et, run.get("cycles", args.cycles))
                         if c not in combos:
                             combos.append(c)
         return combos
-    noises = args.noise if args.noise else ACTIVE_NOISE
+    noises = args.noise if args.noise else ALL_NOISE
     rates = args.rates if args.rates else ERROR_RATES
     etypes = args.error_types if args.error_types else ERROR_TYPES
     return [(n, p, et, args.cycles)

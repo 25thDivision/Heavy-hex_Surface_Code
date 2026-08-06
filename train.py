@@ -51,7 +51,7 @@ sys.path.insert(0, str(_ROOT))
 
 from dataset_generation import load_options  # noqa: E402
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
-    noise_tag, DISTANCE, ERROR_RATES, ERROR_TYPES, ACTIVE_NOISE)
+    noise_tag, DISTANCE, ERROR_RATES, ERROR_TYPES, ALL_NOISE)
 from model.data import load_split, FastTensorDataLoader  # noqa: E402
 from evaluation.metrics import ecr, bit_accuracy, ler_from_logits  # noqa: E402
 
@@ -300,7 +300,7 @@ def main():
 
     rows = []
     for ra in run_list:
-        noises = ra.noise or (ACTIVE_NOISE if ra.all else [ACTIVE_NOISE[0]])
+        noises = ra.noise or (ALL_NOISE if ra.all else [ALL_NOISE[0]])
         rates = ra.rates or (ERROR_RATES if (ra.all or not ra.smoke)
                              else [ERROR_RATES[0]])
         etypes = ra.error_types or ERROR_TYPES
