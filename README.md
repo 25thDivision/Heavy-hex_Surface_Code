@@ -16,8 +16,8 @@ Stim 시뮬레이션 → CNN 디코더 학습 → MWPM 기준선 → IBM QPU 검
   체크포인트는 best val LER 기준으로 저장되고, 최종 성적은 그 체크포인트의
   test head-LER이야.
 - **MWPM 기준선(PyMatching)은 넘어야 할 목표**: 설정을 바꿔 가며 MWPM에
-  얼마나 다가가는가/넘어서는가가 과제의 서사고, 인턴 간 비교는
-  **`LER/MWPM ratio` 한 숫자**로 해 (같은 데이터에 대한 MWPM LER 대비
+  얼마나 다가가는가/넘어서는가가 과제의 서사고, 네 결과는
+  **`LER/MWPM ratio` 한 숫자**로 비교돼 (같은 데이터에 대한 MWPM LER 대비
   CNN head-LER 비율; 1.0 미만이면 MWPM을 이긴 것).
 - 나머지 지표들은 **진단용**이야 (순위에 안 들어감):
   - `ECR (diagnostic, sim-only)` — per-qubit head의 에러 검출률.
@@ -49,7 +49,7 @@ Stim 시뮬레이션 → CNN 디코더 학습 → MWPM 기준선 → IBM QPU 검
   MWPM을 안 돌린 실행에서는 N/A로 표기됨)
 - (QPU 접근이 가능하면) `hardware/run_hw.py analyze`의 QPU LER 리포트
 
-### 공정 비교 규칙 (인턴 간 비교는 이 조건에서만 유효)
+### 공정 비교 규칙 (결과 비교는 이 조건에서만 유효)
 
 - **고정 (변경 금지)**:
   - 데이터셋 생성 설정 (`dataset_generation/`, 노이즈 그리드, 샘플 수)

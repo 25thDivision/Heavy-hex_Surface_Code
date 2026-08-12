@@ -1,7 +1,7 @@
 # credentials — NEVER commit
 keys.json
 
-# reference solutions (staff only, excluded from the student distribution)
+# reference solutions (excluded from the distributed repo)
 solutions/
 
 # generated data / training artifacts
