@@ -27,7 +27,7 @@ Detector definitions:
     exist from cycle 0 on: cycle 0 compares the value against the
     deterministic 0 (i.e. the value itself), and cycles >= 1 compare
     consecutive cycles (temporal XOR, the standard memory-experiment
-    definition; KCS generate_dataset applies the same differencing).
+    definition).
   * X-check: the first measurement is random -> only cycle-to-cycle XOR is a
     detector (from cycle 1 on).
   * Final: 8 Z-detectors based on the final data measurement
@@ -35,15 +35,12 @@ Detector definitions:
   * Observable: logical Z = parity of data [69, 87, 105]
     (converted to DATA_PHYS indices).
 
-Noise model (inherited from KCS):
-  Follows the gathered_stim.csv column scheme (Error_Type, Error_Rate) of
-  KCS/stim_simulation and the application style of its
-  generators/heavyhex_surface_code.py:
+Noise model:
     - inject Error_Type ("X"/"Z") errors on data qubits with probability
       p (= Error_Rate) right after the initial reset
-      (KCS injected a deterministic per-shot Bernoulli(p) mask, which is
-       statistically identical to the X_ERROR(p) probabilistic channel)
-    - background noise profile (KCS stim_simulation/config.json noise_profiles):
+      (a deterministic per-shot Bernoulli(p) mask is statistically
+       identical to the X_ERROR(p) probabilistic channel)
+    - background noise profile (noise_profiles):
         data_depol: DEPOLARIZE1 on data at the start of each cycle
         gate_depol: DEPOLARIZE2 after each CX, DEPOLARIZE1 after each H
         meas_flip : X_ERROR right before measurement
@@ -86,8 +83,7 @@ Z_POS = [j for j, n in enumerate(CHECK_AT) if n in Z_STABS]   # 8 Z-check slots
 X_POS = [j for j, n in enumerate(CHECK_AT) if n in X_STABS]   # 8 X-check slots
 
 # ------------------------------------------------------------------
-# Inherited from KCS stim_simulation/config.json (Error_Type x Error_Rate
-# grid and noise_profiles). Source: KCS/stim_simulation/config.json
+# Fixed Error_Type x Error_Rate grid and noise_profiles
 # ------------------------------------------------------------------
 ERROR_TYPES = ["X"]
 ERROR_RATES = [0.005, 0.01, 0.05]
@@ -177,8 +173,8 @@ def build_stim_circuit(num_cycles=3, noise_type="X", p=0.0,
 
     Args:
         num_cycles: number of QEC cycles (default 3, same as the HW experiment)
-        noise_type: injected error type "X"|"Z" (inherits KCS Error_Type)
-        p:          injected error probability (inherits KCS Error_Rate)
+        noise_type: injected error type "X"|"Z" (Error_Type)
+        p:          injected error probability (Error_Rate)
         noise_profile: a NOISE_PROFILES key or a parameter dict
         inject:     (pauli, data_phys, after_cycle) — deterministic single
                     error for verification (same meaning as the inject arg of
@@ -194,7 +190,7 @@ def build_stim_circuit(num_cycles=3, noise_type="X", p=0.0,
     c = stim.Circuit()
 
     # initial reset (+ reset noise), then inject the data error right after
-    # the reset, exactly like KCS
+    # the reset
     c.append("R", data + ancs)
     if rf > 0:
         c.append("X_ERROR", data + ancs, rf)

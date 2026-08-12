@@ -12,8 +12,10 @@ Input : (B, 2*num_cycles, 4, 5) uint8 syndrome tensor
           (see dataset_generation/heavyhex33_stim.py, ANC_COORD)
         - channels alternate [Z-plane, X-plane] per cycle
           (default num_cycles=3 -> in_channels=6)
-Output: qubit_logits   (B, 17) — per-qubit X-error head (evaluated by ECR)
-        logical_logits (B, 1)  — logical Z flip head (evaluated by LER)
+Output: qubit_logits   (B, 17) — per-qubit X-error head
+                                 (diagnostics: ECR, parity_LER)
+        logical_logits (B, 1)  — logical Z flip head
+                                 (official metric: head-LER)
 
 Keep the interfaces exactly as they are — the training/eval/hardware
 scripts call them as-is:
@@ -75,8 +77,8 @@ def compute_loss(qubit_logits, logical_logits, y_qubit, y_logical,
 
     total = BCE(logical_logits, y_logical) + aux_weight * BCE(qubit_logits,
     y_qubit). qubit_pos_weight (optional, shape (17,)) goes into the
-    per-qubit BCE's pos_weight to counter class imbalance (KCS used
-    pos_weight=(1-p)/p).
+    per-qubit BCE's pos_weight to counter class imbalance
+    (e.g. pos_weight=(1-p)/p).
     """
     # ----------------------------------------------------------------------
     # TODO 3/3 — loss computation

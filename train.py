@@ -3,18 +3,22 @@
 Training entry point — you don't need to modify this file
 ==========================================================
 Trains the dual-head CNN (model/cnn_skeleton.py — the file you complete)
-on the Stim datasets and logs ECR / LER per epoch. Loop structure, early
-stopping, checkpointing and CSV logging follow KCS
-run_stim_simulation.py; model selection is by best validation LER
-(the loss is LER-first), with patience-based early stopping.
+on the Stim datasets and logs the metrics per epoch. Model selection is
+by best validation head-LER (the loss is LER-first), with patience-based
+early stopping.
 
-The "validation set" is the independently generated test file, exactly as
-in KCS (train/test files, not a ratio split).
+Metric status: the **head-LER** (logical head) is the official metric.
+`ECR (diagnostic, sim-only)` and `parity_LER (diagnostic)` are reported
+alongside for diagnosis only, and `LER/MWPM ratio` (present when --mwpm
+ran on the same data) is the single comparison number across runs.
+
+The "validation set" is the independently generated test file
+(train/test files, not a ratio split).
 
 Usage:
   python train.py --smoke                    # quick end-to-end check
   python train.py -n realistic/dp0.001_mf0.01_rf0.01_gd0.008 -p 0.005
-  python train.py --all                      # full KCS grid
+  python train.py --all                      # full noise x rate grid
   python train.py --config train_sweep.json  # JSON-driven sweep (see below)
   python train.py --solution ...             # reference model, if you have solutions/
 
@@ -53,9 +57,10 @@ from dataset_generation import load_options  # noqa: E402
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     noise_tag, DISTANCE, ERROR_RATES, ERROR_TYPES, ALL_NOISE)
 from model.data import load_split, FastTensorDataLoader  # noqa: E402
-from evaluation.metrics import ecr, bit_accuracy, ler_from_logits  # noqa: E402
+from evaluation.metrics import (  # noqa: E402
+    ecr, bit_accuracy, ler_from_logits, parity_ler_from_qubit_logits)
 
-# KCS run_stim_simulation.py / config.json defaults
+# training-loop defaults
 MAX_EPOCHS = 30
 PATIENCE = 5
 BATCH_SIZE = 2048
@@ -68,7 +73,7 @@ def parse_args():
     ap.add_argument("-p", "--rates", nargs="+", type=float, default=None)
     ap.add_argument("-e", "--error-types", nargs="+", default=None)
     ap.add_argument("--all", action="store_true",
-                    help="run the full KCS grid (all active noise x rates)")
+                    help="run the full grid (all active noise x rates)")
     ap.add_argument("--cycles", type=int, default=3)
     ap.add_argument("--data-dir", default=str(_ROOT / "dataset"))
     ap.add_argument("--outdir", default=str(_ROOT / "results" / "train"))
@@ -81,9 +86,9 @@ def parse_args():
                     help="weight of the per-qubit auxiliary BCE loss")
     ap.add_argument("--pos-weight", choices=["none", "linear", "sqrt"],
                     default="none",
-                    help="per-qubit BCE pos_weight from p (KCS used linear "
-                         "on injected-mask labels; our labels differ, so "
-                         "default is none)")
+                    help="per-qubit BCE pos_weight from p (linear was used "
+                         "on injected-mask labels historically; our labels "
+                         "differ, so default is none)")
     ap.add_argument("--device", default=None)
     ap.add_argument("--mwpm", action="store_true",
                     help="also evaluate the MWPM baseline on the val set")
@@ -176,9 +181,21 @@ def evaluate(model, loader, mod, aux_weight, pos_weight, device):
         "ecr": ecr(q_logits, y_q),
         "acc": bit_accuracy(q_logits, y_q),
         "ler": ler_from_logits(l_logits, y_l),
+        "parity_ler": parity_ler_from_qubit_logits(q_logits, y_l),
         "raw_ler": float(y_l.mean()),
         "inf_ms": (t_inf / max(n_inf, 1)) * 1000,
     }
+
+
+def mwpm_ratio(cnn_ler, mwpm_ler):
+    """CNN head-LER / MWPM LER on the same data; 'N/A' without MWPM."""
+    if mwpm_ler is None or mwpm_ler == 0:
+        return None
+    return cnn_ler / mwpm_ler
+
+
+def fmt_ratio(ratio):
+    return f"{ratio:.4f}" if ratio is not None else "N/A"
 
 
 def train_one(args, mod, noise, p, et, device):
@@ -206,7 +223,7 @@ def train_one(args, mod, noise, p, et, device):
 
     # flat layout: results/train/CNN_d3_c3_p0.005_dp0.001_..._gd0.008.csv
     # (d = code distance, c = number of QEC cycles; the error type is
-    #  omitted since the KCS grid is X-only)
+    #  omitted since the grid is X-only)
     tag = f"d{DISTANCE}_c{args.cycles}_p{p}_{noise_tag(noise)}"
     if getattr(args, "run_name", ""):
         tag += f"_{args.run_name}"
@@ -217,12 +234,25 @@ def train_one(args, mod, noise, p, et, device):
     csv_path = result_dir / f"CNN_{tag}.csv"
     ckpt_path = ckpt_dir / f"CNN_{tag}.pt"
 
-    best = {"ler": float("inf"), "ecr": 0.0, "acc": 0.0, "epoch": 0}
+    # MWPM baseline on the same val data (once, before the loop) so every
+    # evaluation report can carry the LER/MWPM ratio column
+    mwpm_ler = None
+    if args.mwpm:
+        from baseline.mwpm import mwpm_ler_from_dataset
+        from model.data import npz_path
+        mwpm_ler = mwpm_ler_from_dataset(
+            npz_path(args.data_dir, noise, "test", args.cycles, p, et))
+        print(f"    MWPM baseline LER (val data): {mwpm_ler:.4f}")
+
+    best = {"ler": float("inf"), "ecr": 0.0, "acc": 0.0,
+            "parity_ler": float("nan"), "epoch": 0}
     patience = 0
     with open(csv_path, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["Epoch", "Train_Loss", "Val_Loss", "Val_ECR",
-                         "Val_Acc", "Val_LER", "Raw_LER", "Inference_ms"])
+        writer.writerow(["Epoch", "Train_Loss", "Val_Loss",
+                         "Val_ECR (diagnostic, sim-only)", "Val_Acc",
+                         "Val_LER", "Val_parity_LER (diagnostic)",
+                         "Raw_LER", "LER/MWPM ratio", "Inference_ms"])
         for epoch in range(1, args.epochs + 1):
             model.train()
             train_loss, nb = 0.0, 0
@@ -239,19 +269,25 @@ def train_one(args, mod, noise, p, et, device):
 
             m = evaluate(model, val_loader, mod, args.aux_weight,
                          pos_weight, device)
+            ratio = mwpm_ratio(m["ler"], mwpm_ler)
             writer.writerow([epoch, f"{train_loss:.6f}",
                              f"{m['val_loss']:.6f}", f"{m['ecr']:.4f}",
                              f"{m['acc']:.4f}", f"{m['ler']:.4f}",
-                             f"{m['raw_ler']:.4f}", f"{m['inf_ms']:.4f}"])
+                             f"{m['parity_ler']:.4f}",
+                             f"{m['raw_ler']:.4f}", fmt_ratio(ratio),
+                             f"{m['inf_ms']:.4f}"])
             f.flush()
             print(f"    [Ep {epoch:02d}] loss {train_loss:.4f}/"
-                  f"{m['val_loss']:.4f} | ECR {m['ecr']:.2%} | "
+                  f"{m['val_loss']:.4f} | "
+                  f"ECR (diagnostic, sim-only) {m['ecr']:.2%} | "
                   f"Acc {m['acc']:.2%} | LER {m['ler']:.4f} "
-                  f"(raw {m['raw_ler']:.4f}) | pat {patience}")
+                  f"(raw {m['raw_ler']:.4f}) | "
+                  f"parity_LER (diagnostic) {m['parity_ler']:.4f} | "
+                  f"LER/MWPM ratio {fmt_ratio(ratio)} | pat {patience}")
 
             if m["ler"] < best["ler"]:
                 best = {"ler": m["ler"], "ecr": m["ecr"], "acc": m["acc"],
-                        "epoch": epoch}
+                        "parity_ler": m["parity_ler"], "epoch": epoch}
                 patience = 0
                 torch.save({"model_state_dict": model.state_dict(),
                             "epoch": epoch, "val_ler": m["ler"],
@@ -266,11 +302,9 @@ def train_one(args, mod, noise, p, et, device):
 
     row = {"noise": noise, "p": p, "type": et, **best,
            "raw_ler": m["raw_ler"]}
-    if args.mwpm:
-        from baseline.mwpm import mwpm_ler_from_dataset
-        from model.data import npz_path
-        row["mwpm_ler"] = mwpm_ler_from_dataset(
-            npz_path(args.data_dir, noise, "test", args.cycles, p, et))
+    if mwpm_ler is not None:
+        row["mwpm_ler"] = mwpm_ler
+    row["ler_mwpm_ratio"] = mwpm_ratio(best["ler"], mwpm_ler)
     return row
 
 
@@ -322,15 +356,31 @@ def main():
                         sys.exit(1)
 
     if rows:
-        print(f"\n{'=' * 70}\nSummary (best epoch per config)")
-        cols = ["noise", "p", "type", "epoch", "ecr", "acc", "raw_ler", "ler"]
-        if any("mwpm_ler" in r for r in rows):
-            cols.append("mwpm_ler")
-        print(" | ".join(f"{c:>8}" for c in cols))
+        print(f"\n{'=' * 70}\nSummary (best epoch per config; official "
+              f"metric = head-LER, 'ler' column)")
+        cols = [("noise", "noise"), ("p", "p"), ("type", "type"),
+                ("epoch", "epoch"),
+                ("ecr", "ECR (diagnostic, sim-only)"),
+                ("acc", "acc"), ("raw_ler", "raw_ler"), ("ler", "ler"),
+                ("parity_ler", "parity_LER (diagnostic)")]
+        if any(r.get("mwpm_ler") is not None for r in rows):
+            cols.append(("mwpm_ler", "mwpm_ler"))
+        cols.append(("ler_mwpm_ratio", "LER/MWPM ratio"))
+
+        def cell(r, key):
+            v = r.get(key)
+            if key == "ler_mwpm_ratio":
+                return fmt_ratio(v)
+            if isinstance(v, float):
+                return f"{v:.4f}"
+            return str(v) if v is not None else ""
+
+        widths = [max(len(label), 8) for _, label in cols]
+        print(" | ".join(f"{label:>{w}}"
+                         for (_, label), w in zip(cols, widths)))
         for r in rows:
-            print(" | ".join(
-                (f"{r.get(c, ''):>8.4f}" if isinstance(r.get(c), float)
-                 else f"{str(r.get(c, '')):>8}") for c in cols))
+            print(" | ".join(f"{cell(r, key):>{w}}"
+                             for (key, _), w in zip(cols, widths)))
 
 
 if __name__ == "__main__":

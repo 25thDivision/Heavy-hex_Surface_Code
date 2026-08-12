@@ -2,17 +2,13 @@
 """
 (3,3) Heavy-Hex CNN dataset generation
 ======================================
-Inherits the (error_type x error_rate) grid and per-config shot counts of
-KCS stim_simulation:
+Uses a fixed (error_type x error_rate) grid and per-config shot counts:
   * error_types / error_rates / noise_profiles / active_noise:
-      KCS/stim_simulation/config.json  (quoted in heavyhex33_stim.py)
+      defined in heavyhex33_stim.py
   * shots (d=3 entries): TRAIN 10,000,000 / TEST 100,000
-      KCS/stim_simulation/simulation/generate_dataset_image.py
-      (TRAIN_SAMPLES={3: 10000000}, TEST_SAMPLES={3: 100000})
-  * train/val split: same as KCS — not a ratio split; train and test files
-    are generated separately with independent seeds, and training uses the
-    test file as the validation set (same usage as KCS
-    run_stim_simulation.py).
+  * train/val split: not a ratio split; train and test files are
+    generated separately with independent seeds, and training uses the
+    test file as the validation set.
 
 Sample format:
   features:        (N, 2*num_cycles, 4, 5) uint8 — 2D diamond-embedded tensor
@@ -33,7 +29,7 @@ Sample format:
 
 Usage:
   python dataset_generation/make_dataset.py --smoke     # quick smoke (10k/2k)
-  python dataset_generation/make_dataset.py             # full KCS grid (default shots)
+  python dataset_generation/make_dataset.py             # full grid (default shots)
   python dataset_generation/make_dataset.py -n realistic/dp0.001_mf0.01_rf0.01_gd0.008 -p 0.01
   python dataset_generation/make_dataset.py --config train_sweep.json
       # every (noise, p, type, cycles) combo the sweep config needs
@@ -55,7 +51,7 @@ from dataset_generation.heavyhex33_stim import (  # noqa: E402
     noise_tag, DISTANCE, ERROR_TYPES, ERROR_RATES, ALL_NOISE,
     NOISE_PROFILES)
 
-# Inherited from KCS generate_dataset_image.py (d=3 entries)
+# Default shot counts (d=3 entries)
 TRAIN_SAMPLES = 10_000_000
 TEST_SAMPLES = 100_000
 CHUNK = 1_000_000
@@ -176,8 +172,8 @@ def main():
                 print(f"   skip (exists): {fname}")
                 continue
             print(f"   >>> {noise} p={p} {et} c={cycles} [{split}]")
-            # independent train/test seeds (KCS generates the two
-            # files separately, i.e. independent samples)
+            # independent train/test seeds (the two files are
+            # generated separately, i.e. independent samples)
             seed = args.seed * 1000 + hash((noise, p, et)) % 10007 + seed_off
             f, l, y = generate_split(circuit, cycles, n,
                                      seed & 0x7FFFFFFF, split)

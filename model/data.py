@@ -3,9 +3,8 @@
 Data loading utilities — you don't need to modify this file
 ===========================================================
 Loads the npz files written by make_dataset.py and builds GPU-resident
-tensor loaders. FastTensorDataLoader is inherited from KCS
-run_stim_simulation.py (much faster than DataLoader workers for small
-fixed-size tensors).
+tensor loaders. FastTensorDataLoader is much faster than DataLoader
+workers for small fixed-size tensors.
 """
 import sys
 from pathlib import Path
@@ -38,7 +37,7 @@ def load_split(data_dir, noise, split, cycles, p, error_type, device="cpu"):
 
 
 class FastTensorDataLoader:
-    """Minimal loader for GPU-resident tensors (from KCS run_stim_simulation.py)."""
+    """Minimal loader for GPU-resident tensors."""
 
     def __init__(self, *tensors, batch_size=2048, shuffle=False):
         assert all(t.shape[0] == tensors[0].shape[0] for t in tensors)

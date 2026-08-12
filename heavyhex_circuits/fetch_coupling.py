@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-fetch_coupling.py -- dump backend coupling maps for the KCS heavy-hex pipeline.
+fetch_coupling.py -- dump backend coupling maps for the heavy-hex pipeline.
 ===============================================================================
 Run this FIRST in any pipeline; every circuit builder consumes its output.
 

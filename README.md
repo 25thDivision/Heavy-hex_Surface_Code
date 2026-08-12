@@ -8,13 +8,26 @@ Stim 시뮬레이션 → CNN 디코더 학습 → MWPM 기준선 → IBM QPU 검
 ## 1. 목표
 
 (3,3) heavy-hex surface code (17 data + 8 dual-use ancilla, 16 stabilizer)의
-측정 syndrome을 디코딩하는 게 목표:
+측정 syndrome을 디코딩하는 **dual-head CNN**을 학습시키는 과제야.
+파이프라인은 고정돼 있고, 너가 하는 일은 **CNN 설정(모델 구조 +
+하이퍼파라미터)을 바꿔서 val LER을 낮추는 것.**
 
-- **dual-head CNN** 학습:
-  - per-qubit head (17 logits) — **ECR**로 평가
-  - logical head (1 logit) — **LER**로 평가
-- 시뮬레이션 데이터에서 **MWPM 기준선**(PyMatching) 이기거나 근접시키기
-- 학습한 디코더를 **실제 IBM QPU** 데이터에 적용해서 LER 보고하기
+- **목표 지표는 하나: val/test head-LER** (logical head의 LER).
+  체크포인트는 best val LER 기준으로 저장되고, 최종 성적은 그 체크포인트의
+  test head-LER이야.
+- **MWPM 기준선(PyMatching)은 넘어야 할 목표**: 설정을 바꿔 가며 MWPM에
+  얼마나 다가가는가/넘어서는가가 과제의 서사고, 인턴 간 비교는
+  **`LER/MWPM ratio` 한 숫자**로 해 (같은 데이터에 대한 MWPM LER 대비
+  CNN head-LER 비율; 1.0 미만이면 MWPM을 이긴 것).
+- 나머지 지표들은 **진단용**이야 (순위에 안 들어감):
+  - `ECR (diagnostic, sim-only)` — per-qubit head의 에러 검출률.
+    per-qubit 라벨이 필요해서 시뮬레이션 전용.
+  - `parity_LER (diagnostic)` — per-qubit head 예측 마스크의 LOGICAL_Z
+    parity로 유도한 LER. 모델이 정말 정정을 배웠는지, logical 분류를
+    지름길로 배웠는지 보는 용도. head-LER은 좋은데 parity_LER이 나쁘면
+    aux loss 가중치(`--aux-weight`) 조정을 검토해 볼 것.
+- (QPU 접근이 가능하면) 학습한 디코더를 **실제 IBM QPU** 데이터에
+  적용해서 LER 보고하기
 
 ### 채워야 할 부분 (전부 `model/cnn_skeleton.py` 안에 있음)
 
@@ -30,9 +43,25 @@ Stim 시뮬레이션 → CNN 디코더 학습 → MWPM 기준선 → IBM QPU 검
 ### Results
 
 - 학습 곡선 (`results/train/`에 쌓이는 epoch별 CSV를 플롯하면 됌)
-- config별 best 모델의 검증 **ECR / LER**
-- **MWPM 대비표** (`train.py --mwpm`이 표로 출력해줘)
+- config별 best 모델의 검증 **head-LER** (+ `parity_LER (diagnostic)`,
+  `ECR (diagnostic, sim-only)` 진단 컬럼)
+- **MWPM 대비 `LER/MWPM ratio`** (`train.py --mwpm`이 표로 출력해줘;
+  MWPM을 안 돌린 실행에서는 N/A로 표기됨)
 - (QPU 접근이 가능하면) `hardware/run_hw.py analyze`의 QPU LER 리포트
+
+### 공정 비교 규칙 (인턴 간 비교는 이 조건에서만 유효)
+
+- **고정 (변경 금지)**:
+  - 데이터셋 생성 설정 (`dataset_generation/`, 노이즈 그리드, 샘플 수)
+  - train/val/test 분할 (독립 생성된 train/test 파일; test 파일이 검증셋)
+  - 평가 스크립트 (`evaluation/`, `train.py`, `hardware/run_hw.py`,
+    `baseline/`)
+  - 체크포인트 선택 기준 (**best val LER**)
+- **변경 허용**:
+  - [model/cnn_skeleton.py](model/cnn_skeleton.py)의 모델 구조 전부
+  - 하이퍼파라미터 (learning rate, batch size, aux loss 가중치 등)
+- **최종 성적**: best-val-LER 체크포인트의 **test head-LER**
+  (및 `LER/MWPM ratio`)
 
 ## 2. 환경 설정
 
@@ -138,9 +167,9 @@ dual-use ancilla가 X-check도 측정하기 때문에 |0⟩_L이 X-stabilizer
 결정론적인 건 Z-stabilizer / logical-Z parity뿐이야. 그래서 per-qubit
 라벨은 final-data의 **측정 flip**(무노이즈 기준 대비 에러 프레임,
 `stim.FlipSimulator`로 샘플링)을 쓰고, logical 라벨은 그 [69, 87, 105]
-parity를 써. 이건 실제 측정 비트의 parity와 정확히 같아. ECR은 이
-per-qubit 라벨이 있어야 해서 **시뮬레이션 전용**이고, LER은
-시뮬레이션/QPU 양쪽에서 계산할 수 있어.
+parity를 써. 이건 실제 측정 비트의 parity와 정확히 같아. ECR(진단용)은
+이 per-qubit 라벨이 있어야 해서 **시뮬레이션 전용**이고, LER(목표 지표)과
+parity_LER(진단용)은 시뮬레이션/QPU 양쪽에서 계산할 수 있어.
 
 ## 5. keys.json (QPU 접근) (이거 만들어야 함!)
 
@@ -213,7 +242,7 @@ dataset_generation/     Stim 회로 생성기(heavyhex33_stim.py) +
                         데이터셋 생성(make_dataset.py)
 verification/           규약 게이트 스크립트 (§4)
 model/                  채워야 할 파일 (cnn_skeleton.py) + 데이터 로더
-evaluation/             ECR / LER 지표
+evaluation/             지표 — head-LER(목표 지표) + ECR/parity_LER(진단용)
 baseline/               MWPM (PyMatching) 기준선
 train.py                학습 진입점 (완성본, 수정할 필요 없어)
 train_options.json      기본 하이퍼파라미터 / 데이터셋 샘플 수 (자동 적용, §3)

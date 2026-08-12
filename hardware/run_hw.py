@@ -33,8 +33,11 @@ Notes:
   * Default backend is ibm_yonsei; switch with --backend ibm_boston.
   * Credentials come ONLY from keys.json at the repo root (copy
     keys.example.json; keys.json is gitignored). Never hardcode tokens/CRNs.
-  * Hardware provides no per-qubit ground truth, so only LER is reported
-    (ECR is simulation-only; see evaluation/metrics.py).
+  * The official metric is the head-LER (logical head). Hardware provides
+    no per-qubit ground truth, so `ECR (diagnostic, sim-only)` cannot be
+    computed here; `parity_LER (diagnostic)` can (it only needs the
+    logical ground truth) and is reported next to the LER, as is the
+    `LER/MWPM ratio` (see evaluation/metrics.py).
   * properties.json records the last calibration before the run — it is
     the best available record, not a live snapshot of drift. You can feed
     it to qiskit-aer's NoiseModel.from_backend() to re-simulate the run
@@ -267,13 +270,15 @@ def cmd_analyze(args):
     y_logical = logical_label(dat)
     raw_ler = float(y_logical.mean())
 
-    rows = [("raw (no decoding)", raw_ler)]
+    # row = (decoder, LER, parity_LER (diagnostic) or None,
+    #        LER/MWPM ratio or None)
+    rows = [("raw (no decoding)", raw_ler, None, None)]
 
     # MWPM baseline (DEM weights from the reference noise profile)
     from baseline.mwpm import build_matching, mwpm_ler_from_hardware
     matching = build_matching(cycles, "X", args.mwpm_p, args.mwpm_profile)
-    rows.append(("MWPM", mwpm_ler_from_hardware(check_mat, dat, cycles,
-                                                matching)))
+    mwpm_ler = mwpm_ler_from_hardware(check_mat, dat, cycles, matching)
+    rows.append(("MWPM", mwpm_ler, None, None))
 
     # CNN: a single --ckpt, or every checkpoint/*.pt if none was given
     if args.ckpt:
@@ -288,7 +293,7 @@ def cmd_analyze(args):
             from solutions.cnn_solution import HeavyHexCNN
         else:
             from model.cnn_skeleton import HeavyHexCNN
-        from evaluation.metrics import ler
+        from evaluation.metrics import ler, parity_ler_from_qubit_logits
         tensor = syndrome_tensor(check_mat, cycles)
         for ckpt_path in ckpts:
             ckpt = torch.load(ckpt_path, map_location="cpu",
@@ -296,18 +301,28 @@ def cmd_analyze(args):
             model = HeavyHexCNN(in_channels=2 * cycles)
             model.load_state_dict(ckpt["model_state_dict"])
             model.eval()
-            preds = []
+            preds, q_logits = [], []
             with torch.no_grad():
                 for i in range(0, shots, 8192):
                     xb = torch.from_numpy(tensor[i:i + 8192])
-                    _, ll = model(xb)
+                    ql, ll = model(xb)
                     preds.append((ll.numpy().ravel() > 0).astype(np.uint8))
+                    q_logits.append(ql.numpy())
             pred = np.concatenate(preds)
-            rows.append((f"CNN ({ckpt_path.name})", ler(pred, y_logical)))
+            cnn_ler = ler(pred, y_logical)
+            parity_ler = parity_ler_from_qubit_logits(
+                np.concatenate(q_logits), y_logical)
+            ratio = cnn_ler / mwpm_ler if mwpm_ler else None
+            rows.append((f"CNN ({ckpt_path.name})", cnn_ler,
+                         parity_ler, ratio))
 
-    print(f"\n{'decoder':<55} {'LER':>8}")
-    for name, v in rows:
-        print(f"{name:<55} {v:>8.4f}")
+    def _fmt(v, spec=".4f"):
+        return format(v, spec) if v is not None else "N/A"
+
+    print(f"\n{'decoder':<55} {'LER':>8} "
+          f"{'parity_LER (diagnostic)':>24} {'LER/MWPM ratio':>15}")
+    for name, v, pl, ratio in rows:
+        print(f"{name:<55} {v:>8.4f} {_fmt(pl):>24} {_fmt(ratio):>15}")
 
     # persist the report next to the training results
     run_id = args.job_id or Path(args.npz).resolve().parent.name
@@ -315,9 +330,11 @@ def cmd_analyze(args):
     csv_path = RESULTS_HW_DIR / f"hw_{run_id}.csv"
     with open(csv_path, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["decoder", "ler", "shots", "cycles", "run_id"])
-        for name, v in rows:
-            w.writerow([name, f"{v:.6f}", shots, cycles, run_id])
+        w.writerow(["decoder", "ler", "parity_LER (diagnostic)",
+                    "LER/MWPM ratio", "shots", "cycles", "run_id"])
+        for name, v, pl, ratio in rows:
+            w.writerow([name, f"{v:.6f}", _fmt(pl, ".6f"),
+                        _fmt(ratio, ".6f"), shots, cycles, run_id])
     print(f"saved -> {csv_path}")
 
 
