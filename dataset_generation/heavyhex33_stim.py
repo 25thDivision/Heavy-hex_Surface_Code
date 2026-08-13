@@ -27,7 +27,7 @@ Detector definitions:
     exist from cycle 0 on: cycle 0 compares the value against the
     deterministic 0 (i.e. the value itself), and cycles >= 1 compare
     consecutive cycles (temporal XOR, the standard memory-experiment
-    definition).
+    definition; KCS generate_dataset applies the same differencing).
   * X-check: the first measurement is random -> only cycle-to-cycle XOR is a
     detector (from cycle 1 on).
   * Final: 8 Z-detectors based on the final data measurement
@@ -35,12 +35,15 @@ Detector definitions:
   * Observable: logical Z = parity of data [69, 87, 105]
     (converted to DATA_PHYS indices).
 
-Noise model:
+Noise model (inherited from KCS):
+  Follows the gathered_stim.csv column scheme (Error_Type, Error_Rate) of
+  KCS/stim_simulation and the application style of its
+  generators/heavyhex_surface_code.py:
     - inject Error_Type ("X"/"Z") errors on data qubits with probability
       p (= Error_Rate) right after the initial reset
-      (a deterministic per-shot Bernoulli(p) mask is statistically
-       identical to the X_ERROR(p) probabilistic channel)
-    - background noise profile (noise_profiles):
+      (KCS injected a deterministic per-shot Bernoulli(p) mask, which is
+       statistically identical to the X_ERROR(p) probabilistic channel)
+    - background noise profile (KCS stim_simulation/config.json noise_profiles):
         data_depol: DEPOLARIZE1 on data at the start of each cycle
         gate_depol: DEPOLARIZE2 after each CX, DEPOLARIZE1 after each H
         meas_flip : X_ERROR right before measurement
@@ -59,9 +62,10 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from heavyhex_circuits.heavyhex_37q import (  # noqa: E402
-    DATA_PHYS, ANC_PHYS, CHECK_DEFS, Z_STABS, X_STABS, LOGICAL_Z, LOGICAL_X)
+    ALL_PHYS, DATA_PHYS, ANC_PHYS, CHECK_DEFS, Z_STABS, X_STABS,
+    LOGICAL_Z, LOGICAL_X, L, br)
 from heavyhex_circuits.heavyhex_depth7_opt_for_37q import (  # noqa: E402
-    CYCLE_ORDER, N_CHECKS, RUNG)
+    CYCLE_ORDER, N_CHECKS, RUNG, ROUND1, ROUND2, FOLDS)
 
 # ------------------------------------------------------------------
 # Stim qubit indices: data = order of DATA_PHYS (0..16), ancilla = 17..24
@@ -83,7 +87,8 @@ Z_POS = [j for j, n in enumerate(CHECK_AT) if n in Z_STABS]   # 8 Z-check slots
 X_POS = [j for j, n in enumerate(CHECK_AT) if n in X_STABS]   # 8 X-check slots
 
 # ------------------------------------------------------------------
-# Fixed Error_Type x Error_Rate grid and noise_profiles
+# Inherited from KCS stim_simulation/config.json (Error_Type x Error_Rate
+# grid and noise_profiles). Source: KCS/stim_simulation/config.json
 # ------------------------------------------------------------------
 ERROR_TYPES = ["X"]
 ERROR_RATES = [0.005, 0.01, 0.05]
@@ -110,6 +115,10 @@ def noise_tag(noise_profile):
     if isinstance(noise_profile, str):
         return noise_profile.split("/")[-1]
     p = noise_profile
+    if p.get("mode") == "ibm_calibration_v1":
+        backend = p.get("backend", "ibm").removeprefix("ibm_")
+        run_id = str(p.get("run_id", "cal"))[:8]
+        return f"{backend}_{run_id}"
     return (f"dp{p['data_depol']}_mf{p['meas_flip']}"
             f"_rf{p['reset_flip']}_gd{p['gate_depol']}")
 
@@ -165,6 +174,212 @@ ANC_COORD = _anc_coords()
 
 
 # ==================================================================
+# Location-dependent IBM calibration profiles
+# ==================================================================
+def is_hardware_noise_profile(noise_profile):
+    """True for a profile produced by make_ibm_noise_profile.py."""
+    if isinstance(noise_profile, str):
+        p = NOISE_PROFILES.get(noise_profile, {})
+    else:
+        p = noise_profile
+    return isinstance(p, dict) and p.get("mode") == "ibm_calibration_v1"
+
+
+def _lookup_prob(mapping, key, default=0.0):
+    try:
+        return float(mapping.get(str(key), default))
+    except (TypeError, ValueError, AttributeError):
+        return float(default)
+
+
+def _edge_key(a, b):
+    a, b = sorted((int(a), int(b)))
+    return f"{a}-{b}"
+
+
+def _edge_prob(prof, a, b):
+    return _lookup_prob(prof.get("two_qubit_error", {}), _edge_key(a, b), 0.0)
+
+
+def _append_cx_with_cal_noise(c, prof, control_patch, target_patch):
+    """Patch-label CX followed by that physical edge's calibrated error."""
+    c.append("CX", [L[control_patch], L[target_patch]])
+    e = _edge_prob(prof, control_patch, target_patch)
+    if e > 0:
+        c.append("DEPOLARIZE2", [L[control_patch], L[target_patch]], e)
+
+
+def _append_h_with_cal_noise(c, prof, patch_q):
+    c.append("H", [L[patch_q]])
+    e = _lookup_prob(prof.get("h_error", {}), patch_q, 0.0)
+    if e > 0:
+        c.append("DEPOLARIZE1", [L[patch_q]], e)
+
+
+def _append_measure_with_cal_noise(c, prof, patch_q):
+    e = _lookup_prob(prof.get("readout_error", {}), patch_q, 0.0)
+    if e > 0:
+        c.append("X_ERROR", [L[patch_q]], e)
+    c.append("M", [L[patch_q]])
+
+
+def _relay_layers_cal(c, prof, rnd):
+    """Exactly mirror HeavyHex37QDepthOpt._relay_layers for one fold/unfold."""
+    for outer, rep in FOLDS[rnd]:
+        _append_cx_with_cal_noise(c, prof, outer, br(outer, rep))
+    for outer, rep in FOLDS[rnd]:
+        _append_cx_with_cal_noise(c, prof, br(outer, rep), rep)
+    for outer, rep in FOLDS[rnd]:
+        _append_cx_with_cal_noise(c, prof, outer, br(outer, rep))
+
+
+def _round_cal(c, prof, rnd, names):
+    """Hardware-shaped round: folds -> rung reads -> no-reset M -> unfold."""
+    _relay_layers_cal(c, prof, rnd)
+    for name in names:
+        ctype, support, anc, _ = CHECK_DEFS[name]
+        u, v = RUNG[anc]
+        reps = [q for q in (u, v) if q in support]
+        if ctype == "Z":
+            for q in reps:
+                _append_cx_with_cal_noise(c, prof, q, anc)
+        else:
+            _append_h_with_cal_noise(c, prof, anc)
+            for q in reps:
+                _append_cx_with_cal_noise(c, prof, anc, q)
+            _append_h_with_cal_noise(c, prof, anc)
+    for name in names:
+        _append_measure_with_cal_noise(c, prof, CHECK_DEFS[name][2])
+    _relay_layers_cal(c, prof, rnd)
+
+
+def _measurement_prev_indices(num_cycles):
+    """For each raw syndrome measurement, previous measurement of same ancilla."""
+    prev = {a: None for a in ANC_PHYS}
+    out = {}
+    for cyc in range(num_cycles):
+        for j, name in enumerate(CHECK_AT):
+            k = cyc * N_CHECKS + j
+            anc = CHECK_DEFS[name][2]
+            out[k] = prev[anc]
+            prev[anc] = k
+    return out
+
+
+def _xor_index_groups(*groups):
+    """Symmetric difference of measurement-index groups (XOR semantics)."""
+    s = set()
+    for g in groups:
+        if g is None:
+            continue
+        if isinstance(g, int):
+            g = [g]
+        for x in g:
+            if x is None:
+                continue
+            if x in s:
+                s.remove(x)
+            else:
+                s.add(x)
+    return sorted(s)
+
+
+def _check_raw_indices(cyc, j, prev_idx):
+    k = cyc * N_CHECKS + j
+    return _xor_index_groups(k, prev_idx[k])
+
+
+def _append_detectors_no_reset(c, num_cycles):
+    """Detectors for the hardware-shaped no-reset raw ancilla stream.
+
+    Each check value is raw_now XOR raw_previous_for_same_ancilla.  Detector
+    definitions are expanded into those raw measurement records, but their
+    ORDER is kept identical to _append_detectors(), so downstream tensor/
+    MWPM reconstruction remains unchanged.
+    """
+    M = N_CHECKS * num_cycles + NUM_DATA
+    prev_idx = _measurement_prev_indices(num_cycles)
+
+    def rec(i):
+        return stim.target_rec(i - M)
+
+    def append_detector(indices):
+        c.append("DETECTOR", [rec(i) for i in _xor_index_groups(indices)])
+
+    # Temporal check detectors.
+    for cyc in range(num_cycles):
+        for j, name in enumerate(CHECK_AT):
+            now = _check_raw_indices(cyc, j, prev_idx)
+            if name in Z_STABS:
+                if cyc == 0:
+                    append_detector(now)
+                else:
+                    old = _check_raw_indices(cyc - 1, j, prev_idx)
+                    append_detector(_xor_index_groups(now, old))
+            elif cyc >= 1:
+                old = _check_raw_indices(cyc - 1, j, prev_idx)
+                append_detector(_xor_index_groups(now, old))
+
+    # Final Z detectors: final data parity XOR final Z check value.
+    fin0 = N_CHECKS * num_cycles
+    for j in Z_POS:
+        name = CHECK_AT[j]
+        data_indices = [fin0 + DIDX[qp] for qp in CHECK_DEFS[name][1]]
+        chk = _check_raw_indices(num_cycles - 1, j, prev_idx)
+        append_detector(_xor_index_groups(data_indices, chk))
+
+    c.append("OBSERVABLE_INCLUDE",
+             [rec(fin0 + i) for i in LOGICAL_Z_IDX], 0)
+
+
+def _build_ibm_calibration_circuit(num_cycles, noise_type, p, prof, inject=None):
+    """37-qubit Stim mirror of HeavyHex37QDepthOpt with local calibration noise.
+
+    Unlike the abstract training circuit, this includes all 12 bridge qubits
+    and uses NO-RESET ancillas, matching the hardware circuit's topology and
+    measurement semantics.  IBM reported gate/readout infidelities are used
+    as local stochastic Pauli/depolarizing probability proxies.
+    """
+    c = stim.Circuit()
+    allq = [L[q] for q in ALL_PHYS]
+    data = [L[q] for q in DATA_PHYS]
+
+    # Establish the known memory-Z initial state.  The hardware circuit has no
+    # explicit reset instructions, so saved reset calibration is deliberately
+    # NOT injected on every cycle.
+    c.append("R", allq)
+    if p > 0:
+        c.append("X_ERROR" if noise_type == "X" else "Z_ERROR", data, p)
+
+    for cyc in range(num_cycles):
+        _round_cal(c, prof, 1, ROUND1)
+        _round_cal(c, prof, 2, ROUND2)
+        if inject is not None and inject[2] == cyc:
+            pauli, dq, _ = inject
+            c.append(pauli.upper(), [L[dq]])
+
+    for q in DATA_PHYS:
+        _append_measure_with_cal_noise(c, prof, q)
+    _append_detectors_no_reset(c, num_cycles)
+    return c
+
+
+def raw_no_reset_to_check_matrix(raw_syn, num_cycles):
+    """Hardware-style raw ancilla measurement flips -> check-value flips."""
+    raw_syn = np.asarray(raw_syn, dtype=np.uint8)
+    out = np.zeros_like(raw_syn)
+    prev = {a: np.zeros(raw_syn.shape[0], dtype=np.uint8) for a in ANC_PHYS}
+    for cyc in range(num_cycles):
+        for j, name in enumerate(CHECK_AT):
+            k = cyc * N_CHECKS + j
+            anc = CHECK_DEFS[name][2]
+            raw = raw_syn[:, k]
+            out[:, k] = raw ^ prev[anc]
+            prev[anc] = raw.copy()
+    return out
+
+
+# ==================================================================
 # Stim circuit construction
 # ==================================================================
 def build_stim_circuit(num_cycles=3, noise_type="X", p=0.0,
@@ -173,8 +388,8 @@ def build_stim_circuit(num_cycles=3, noise_type="X", p=0.0,
 
     Args:
         num_cycles: number of QEC cycles (default 3, same as the HW experiment)
-        noise_type: injected error type "X"|"Z" (Error_Type)
-        p:          injected error probability (Error_Rate)
+        noise_type: injected error type "X"|"Z" (inherits KCS Error_Type)
+        p:          injected error probability (inherits KCS Error_Rate)
         noise_profile: a NOISE_PROFILES key or a parameter dict
         inject:     (pauli, data_phys, after_cycle) — deterministic single
                     error for verification (same meaning as the inject arg of
@@ -182,6 +397,10 @@ def build_stim_circuit(num_cycles=3, noise_type="X", p=0.0,
     """
     prof = (NOISE_PROFILES[noise_profile] if isinstance(noise_profile, str)
             else dict(noise_profile))
+    if prof.get("mode") == "ibm_calibration_v1":
+        return _build_ibm_calibration_circuit(
+            num_cycles, noise_type, p, prof, inject=inject)
+
     dp, mf = prof["data_depol"], prof["meas_flip"]
     rf, gd = prof["reset_flip"], prof["gate_depol"]
 
@@ -190,7 +409,7 @@ def build_stim_circuit(num_cycles=3, noise_type="X", p=0.0,
     c = stim.Circuit()
 
     # initial reset (+ reset noise), then inject the data error right after
-    # the reset
+    # the reset, exactly like KCS
     c.append("R", data + ancs)
     if rf > 0:
         c.append("X_ERROR", data + ancs, rf)
@@ -285,14 +504,15 @@ def num_detectors(num_cycles):
 def split_stim_sample(raw, num_cycles):
     """compile_sampler() output (shots, 16C+17) -> (syn, dat).
 
-    Stim uses MR on the ancillas, so the syn bits ARE the check values
-    (hardware raw bits must first pass through the XOR chain of
-    check_values())."""
+    For the legacy abstract profiles Stim uses MR, so syn bits are already
+    check values. Hardware-calibration profiles instead mirror the no-reset
+    hardware stream; sample_flips(..., raw_no_reset=True) applies the same
+    per-ancilla XOR chain before returning syn."""
     raw = np.asarray(raw, dtype=np.uint8)
     return raw[:, :N_CHECKS * num_cycles], raw[:, N_CHECKS * num_cycles:]
 
 
-def sample_flips(circuit, shots, num_cycles, seed=None):
+def sample_flips(circuit, shots, num_cycles, seed=None, raw_no_reset=False):
     """Sample MEASUREMENT FLIPS (error frame vs the noiseless reference)
     with stim.FlipSimulator -> (syn_flips, dat_flips).
 
@@ -318,7 +538,10 @@ def sample_flips(circuit, shots, num_cycles, seed=None):
                             disable_stabilizer_randomization=True)
     fs.do(circuit)
     mf = fs.get_measurement_flips().T.astype(np.uint8)  # (shots, 16C+17)
-    return split_stim_sample(mf, num_cycles)
+    syn, dat = split_stim_sample(mf, num_cycles)
+    if raw_no_reset:
+        syn = raw_no_reset_to_check_matrix(syn, num_cycles)
+    return syn, dat
 
 
 def check_matrix_from_dict(vals, num_cycles):

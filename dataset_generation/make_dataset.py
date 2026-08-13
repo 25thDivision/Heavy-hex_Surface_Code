@@ -2,13 +2,17 @@
 """
 (3,3) Heavy-Hex CNN dataset generation
 ======================================
-Uses a fixed (error_type x error_rate) grid and per-config shot counts:
+Inherits the (error_type x error_rate) grid and per-config shot counts of
+KCS stim_simulation:
   * error_types / error_rates / noise_profiles / active_noise:
-      defined in heavyhex33_stim.py
+      KCS/stim_simulation/config.json  (quoted in heavyhex33_stim.py)
   * shots (d=3 entries): TRAIN 10,000,000 / TEST 100,000
-  * train/val split: not a ratio split; train and test files are
-    generated separately with independent seeds, and training uses the
-    test file as the validation set.
+      KCS/stim_simulation/simulation/generate_dataset_image.py
+      (TRAIN_SAMPLES={3: 10000000}, TEST_SAMPLES={3: 100000})
+  * train/val split: same as KCS — not a ratio split; train and test files
+    are generated separately with independent seeds, and training uses the
+    test file as the validation set (same usage as KCS
+    run_stim_simulation.py).
 
 Sample format:
   features:        (N, 2*num_cycles, 4, 5) uint8 — 2D diamond-embedded tensor
@@ -29,7 +33,7 @@ Sample format:
 
 Usage:
   python dataset_generation/make_dataset.py --smoke     # quick smoke (10k/2k)
-  python dataset_generation/make_dataset.py             # full grid (default shots)
+  python dataset_generation/make_dataset.py             # full KCS grid (default shots)
   python dataset_generation/make_dataset.py -n realistic/dp0.001_mf0.01_rf0.01_gd0.008 -p 0.01
   python dataset_generation/make_dataset.py --config train_sweep.json
       # every (noise, p, type, cycles) combo the sweep config needs
@@ -49,9 +53,9 @@ from dataset_generation import load_options, load_sweep  # noqa: E402
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     build_stim_circuit, sample_flips, syndrome_tensor, logical_label,
     noise_tag, DISTANCE, ERROR_TYPES, ERROR_RATES, ALL_NOISE,
-    NOISE_PROFILES)
+    NOISE_PROFILES, is_hardware_noise_profile)
 
-# Default shot counts (d=3 entries)
+# Inherited from KCS generate_dataset_image.py (d=3 entries)
 TRAIN_SAMPLES = 10_000_000
 TEST_SAMPLES = 100_000
 CHUNK = 1_000_000
@@ -117,7 +121,7 @@ def sweep_combos(args):
             for n in noises for p in rates for et in etypes]
 
 
-def generate_split(circuit, num_cycles, total, seed, desc):
+def generate_split(circuit, num_cycles, total, seed, desc, raw_no_reset=False):
     """Sample `total` shots in CHUNK batches; return (features, labels, logical).
 
     Uses FlipSimulator flips: identical to measured values for every
@@ -129,8 +133,9 @@ def generate_split(circuit, num_cycles, total, seed, desc):
     t0 = time.time()
     while done < total:
         n = min(CHUNK, total - done)
-        syn, dat = sample_flips(circuit, n, num_cycles,
-                                seed=seed * 100003 + chunk_i)
+        syn, dat = sample_flips(
+            circuit, n, num_cycles, seed=seed * 100003 + chunk_i,
+            raw_no_reset=raw_no_reset)
         feats[done:done + n] = syndrome_tensor(syn, num_cycles)
         labels[done:done + n] = dat
         done += n
@@ -164,6 +169,10 @@ def main():
         ndir = outdir / noise_tag(noise)
         ndir.mkdir(parents=True, exist_ok=True)
         circuit = build_stim_circuit(cycles, et, p, noise)
+        raw_no_reset = is_hardware_noise_profile(noise)
+        if raw_no_reset:
+            print("      IBM calibration profile: using 37q hardware-shaped "
+                  "Stim circuit + no-reset XOR-chain conversion")
         for split, n, seed_off in (("train", n_train, 0),
                                    ("test", n_test, 1)):
             fname = ndir / (f"{split}_d{DISTANCE}_c{cycles}"
@@ -172,11 +181,12 @@ def main():
                 print(f"   skip (exists): {fname}")
                 continue
             print(f"   >>> {noise} p={p} {et} c={cycles} [{split}]")
-            # independent train/test seeds (the two files are
-            # generated separately, i.e. independent samples)
+            # independent train/test seeds (KCS generates the two
+            # files separately, i.e. independent samples)
             seed = args.seed * 1000 + hash((noise, p, et)) % 10007 + seed_off
-            f, l, y = generate_split(circuit, cycles, n,
-                                     seed & 0x7FFFFFFF, split)
+            f, l, y = generate_split(
+                circuit, cycles, n, seed & 0x7FFFFFFF, split,
+                raw_no_reset=raw_no_reset)
             # atomic write: dump to a temp file, then rename. A
             # crashed/concurrent run can never leave a half-written
             # npz under the final name (the exists-skip above would
@@ -187,7 +197,8 @@ def main():
                     np.savez_compressed(
                         fh, features=f, labels=l, logical_labels=y,
                         num_cycles=cycles, noise_profile=noise,
-                        error_rate=p, error_type=et)
+                        error_rate=p, error_type=et,
+                        hardware_shaped_stim=raw_no_reset)
                 tmp.replace(fname)
             finally:
                 tmp.unlink(missing_ok=True)
