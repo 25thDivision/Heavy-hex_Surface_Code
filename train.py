@@ -21,19 +21,20 @@ Usage:
   python train.py --model cnn --smoke        # quick end-to-end check
   python train.py -n realistic/dp0.001_mf0.01_rf0.01_gd0.008 -p 0.005
   python train.py --all                      # full noise x rate grid
-  python train.py --config train_sweep.json  # JSON-driven sweep (see below)
+  python train.py --config other_sweep.json  # alternate sweep file (see below)
   python train.py --solution ...             # reference model, if you have solutions/
 
-Options file (train_options.json at the repo root, auto-loaded when it
-exists): replaces the hardcoded defaults — "train" section for the
-hyperparameters here, "dataset" section for make_dataset.py's sample
-counts, top-level "cycles" shared by both. Explicit CLI arguments still
-override it, and sweep run entries override both.
+Config file (config.json at the repo root, auto-loaded when it
+exists): its "train" section replaces the hyperparameter defaults here,
+"dataset" the sample counts of make_dataset.py, top-level "cycles" is
+shared by both, and "noise_profiles" is the noise registry. Explicit
+CLI arguments still override the defaults, and sweep run entries
+override both.
 
-Sweep config: a JSON of {"defaults": {...}, "runs": [{...}]}. If
-train_sweep.json exists at the repo root it is used automatically —
-unless you pass --config, select explicitly with -n/-p/-e/--all/--smoke,
-or disable with --config none.
+Sweep: config.json's "sweep" section ({"defaults": {...}, "runs":
+[{...}]}) is applied automatically when present — unless you pass
+--config (a standalone sweep JSON or another full config file), select
+explicitly with -n/-p/-e/--all/--smoke, or disable with --config none.
 Each run entry may set noise / rates / error_types plus hyperparameter
 overrides (cycles, epochs, patience, batch_size, lr, aux_weight,
 pos_weight, mwpm) and an optional "name" appended to the result/checkpoint
@@ -55,7 +56,8 @@ import torch.optim as optim
 _ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(_ROOT))
 
-from dataset_generation import load_options  # noqa: E402
+from dataset_generation import (  # noqa: E402
+    load_options, has_sweep, CONFIG_PATH)
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     noise_tag, DISTANCE, ERROR_RATES, ERROR_TYPES, ALL_NOISE)
 from model import (  # noqa: E402
@@ -112,15 +114,15 @@ def parse_args():
                     help="single config, 3 epochs, tiny batch count")
     ap.add_argument("--config", default=None,
                     help="sweep-config JSON: loop training over its run "
-                         "entries. Defaults to train_sweep.json at the "
-                         "repo root when no selection args (-n/-p/-e/"
+                         "entries. Defaults to config.json's sweep "
+                         "section when no selection args (-n/-p/-e/"
                          "--all/--smoke) are given; 'none' disables")
-    # train_options.json (repo root, if present) replaces the hardcoded
-    # defaults; explicit CLI arguments and sweep entries still win
+    # config.json's "train" section (repo root, if present) replaces the
+    # hardcoded defaults; explicit CLI arguments and sweep entries still win
     opts = load_options("train")
     if opts:
         ap.set_defaults(**opts)
-        print(f"train_options.json: {opts}")
+        print(f"config.json [train]: {opts}")
     args = ap.parse_args()
     # auto-sweep: no explicit config and no explicit selection -> pick up
     # the default sweep file if it exists
@@ -129,9 +131,8 @@ def parse_args():
     elif args.config is None and not (args.noise or args.rates
                                       or args.error_types or args.all
                                       or args.smoke):
-        default_sweep = _ROOT / "train_sweep.json"
-        if default_sweep.exists():
-            args.config = str(default_sweep)
+        if has_sweep():
+            args.config = str(CONFIG_PATH)
     return args
 
 

@@ -1,0 +1,62 @@
+{
+  "cycles": 3,
+  "train": {
+    "epochs": 30,
+    "patience": 5,
+    "batch_size": 2048,
+    "lr": 0.001,
+    "aux_weight": 0.5,
+    "pos_weight": "none",
+    "mwpm": false
+  },
+  "dataset": {
+    "train_samples": 10000000,
+    "test_samples": 100000,
+    "seed": 0
+  },
+  "sweep": {
+    "defaults": {
+      "mwpm": true
+    },
+    "runs": [
+      {
+        "model": "cnn"
+      },
+      {
+        "model": "gnn"
+      }
+    ]
+  },
+  "noise_profiles": {
+    "realistic/dp0.001_mf0.01_rf0.01_gd0.008": {
+      "data_depol": 0.001,
+      "meas_flip": 0.01,
+      "reset_flip": 0.01,
+      "gate_depol": 0.008
+    },
+    "realistic/dp0.005_mf0.02_rf0.02_gd0.015": {
+      "data_depol": 0.005,
+      "meas_flip": 0.02,
+      "reset_flip": 0.02,
+      "gate_depol": 0.015
+    },
+    "realistic/dp0.01_mf0.05_rf0.05_gd0.01": {
+      "data_depol": 0.01,
+      "meas_flip": 0.05,
+      "reset_flip": 0.05,
+      "gate_depol": 0.01
+    },
+    "realistic/dp0.05_mf0.1_rf0.1_gd0.05": {
+      "data_depol": 0.05,
+      "meas_flip": 0.1,
+      "reset_flip": 0.1,
+      "gate_depol": 0.05
+    },
+    "realistic/dp0.1_mf0.5_rf0.5_gd0.1": {
+      "data_depol": 0.1,
+      "meas_flip": 0.5,
+      "reset_flip": 0.5,
+      "gate_depol": 0.1
+    }
+  }
+}

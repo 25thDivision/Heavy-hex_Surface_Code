@@ -1,7 +1,0 @@
-{
-  "defaults": {"mwpm": true},
-  "runs": [
-    {"model": "cnn"},
-    {"model": "gnn"}
-  ]
-}

@@ -47,7 +47,6 @@ Noise model:
         reset_flip: X_ERROR right after reset
 """
 
-import json
 import sys
 from pathlib import Path
 
@@ -88,15 +87,21 @@ X_POS = [j for j, n in enumerate(CHECK_AT) if n in X_STABS]   # 8 X-check slots
 ERROR_TYPES = ["X"]
 ERROR_RATES = [0.005, 0.01, 0.05]
 
-# noise_profiles.json (repo root) defines every runnable profile; the plain
-# 4-parameter ones are generated/trained/evaluated by default. Profiles with
-# a "mode" key (e.g. "qpu_avg_v1" written by make_qpu_avg_profile.py) use the
-# hardware-shaped 37q generator (heavyhex37_qpu_stim.py) and stay OUT of the
-# default grid — select them explicitly with -n qpu/<name>. The noiseless
-# profile is a fixture for verification/verify_equivalence.py only, so it
-# stays out of the JSON (and out of ALL_NOISE).
-with open(_ROOT / "noise_profiles.json") as _f:
-    _JSON_PROFILES = json.load(_f)
+# the "noise_profiles" section of config.json (repo root) defines every
+# runnable profile; the plain 4-parameter ones are generated/trained/
+# evaluated by default. Profiles with a "mode" key (e.g. "qpu_avg_v1"
+# written by make_qpu_avg_profile.py) use the hardware-shaped 37q generator
+# (heavyhex37_qpu_stim.py) and stay OUT of the default grid — select them
+# explicitly with -n qpu/<name>. The noiseless profile is a fixture for
+# verification/verify_equivalence.py only, so it stays out of the JSON
+# (and out of ALL_NOISE).
+from dataset_generation import load_config  # noqa: E402
+
+_JSON_PROFILES = load_config().get("noise_profiles", {})
+if not _JSON_PROFILES:
+    raise RuntimeError(
+        "config.json has no 'noise_profiles' section (repo root) — the "
+        "noise-profile registry is required to build circuits/datasets.")
 ALL_NOISE = [n for n, prof in _JSON_PROFILES.items() if "mode" not in prof]
 NOISE_PROFILES = {
     "ideal/dp0_mf0_rf0_gd0": {

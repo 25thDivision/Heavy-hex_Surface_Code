@@ -48,7 +48,7 @@ model/gnn_skeleton.py)의 모델만 비어 있어.** 이 파일만 채우면 아
 모델 로딩은 [model/__init__.py](model/__init__.py)의 레지스트리
 (`get_model_module(model_name, use_solution)`)로 일원화돼 있고, 결과/체크포인트
 파일 이름은 `{MODEL}_{tag}` 형식이야 (예: `CNN_heavyhex_d3_c3_...`,
-`GNN_heavyhex_d3_c3_...`). train_sweep.json의 run 항목에 `"model"` 키를 주면
+`GNN_heavyhex_d3_c3_...`). config.json `sweep` 섹션의 run 항목에 `"model"` 키를 주면
 한 스윕에서 cnn/gnn을 같은 데이터로 이어 학습해 **CNN/GNN/MWPM이 한 표에**
 나오는 요약을 얻을 수 있어.
 
@@ -209,7 +209,8 @@ GNN: model/gnn_skeleton.py (P1 마일스톤에서 추가; 같은 인터페이스
 # 1) 프로파일 생성: 같은 백엔드·같은 코드의 non-dry-run 최신 N개(기본 5) 평균
 python dataset_generation/make_qpu_avg_profile.py                    # heavyhex
 python dataset_generation/make_qpu_avg_profile.py --code surface --backend ibm_miami
-# -> noise_profiles.json에 qpu/<backend>_<code>_avg<N>_<YYYYMMDD> 로 등록
+# -> config.json의 noise_profiles 섹션에 qpu/<backend>_<code>_avg<N>_<YYYYMMDD> 로 등록
+#    (다른 섹션은 건드리지 않아)
 #    (<YYYYMMDD> = 평균에 포함된 run들의 submitted_at 중 최신 날짜)
 
 # 2) 코드별 게이트 ALL PASS 필수 -> 데이터셋 -> 학습
@@ -264,17 +265,17 @@ python train.py --model gnn --code surface -n qpu/<이름> -p 0.005 --mwpm
 
 ```bash
 # 1) [시뮬레이션 축] 표준 노이즈 프로파일 데이터셋에서 CNN/GNN + MWPM
-#    -> 스윕 한 번으로 model 컬럼이 있는 통합 표가 나온다
-cat > train_sweep.json <<'JSON'
-{"defaults": {"noise": "realistic/dp0.001_mf0.01_rf0.01_gd0.008",
-              "rates": [0.005], "mwpm": true},
- "runs": [{"model": "cnn"}, {"model": "gnn"}]}
-JSON
+#    -> 스윕 한 번으로 model 컬럼이 있는 통합 표가 나온다.
+#    config.json의 "sweep" 섹션을 이렇게 두고 (기본으로 들어 있는 형태에
+#    noise/rates만 고정):
+#      "sweep": {"defaults": {"noise": "realistic/dp0.001_mf0.01_rf0.01_gd0.008",
+#                             "rates": [0.005], "mwpm": true},
+#                "runs": [{"model": "cnn"}, {"model": "gnn"}]}
 python dataset_generation/make_dataset.py && python train.py
 
 # 2) [QPU-cal 축] 캘리브레이션 평균 프로파일 데이터셋에서 같은 스윕
 #    (사전에 make_qpu_avg_profile.py로 qpu/<이름> 등록, 게이트 ALL PASS)
-#    train_sweep.json의 noise만 qpu/<이름>으로 바꿔 반복
+#    sweep의 noise만 qpu/<이름>으로 바꿔 반복
 # 3) [실기기 축(선택)] run_hw.py analyze가 raw/MWPM/CNN/GNN을 한 표로 출력
 python hardware/run_hw.py analyze --job-id <ID>   # CNN+GNN 전부 (파일명 접두사로 자동 인식)
 ```
@@ -307,9 +308,9 @@ python verification/verify_rotatedSurface3.py          # surface (rotatedSurface
 
 # 1) 데이터셋 생성 (--code 기본값은 heavyhex)
 python dataset_generation/make_dataset.py --smoke   # 빠른 확인용
-python dataset_generation/make_dataset.py           # train_sweep.json 있으면 그 조합,
+python dataset_generation/make_dataset.py           # config.json에 sweep 섹션 있으면 그 조합,
                                                     # 없으면 전체 그리드 (용량/시간 꽤 큼)
-#    작게 줄이고 싶으면 예 (기본 샘플 수는 train_options.json의 dataset 섹션으로도 조절 가능):
+#    작게 줄이고 싶으면 예 (기본 샘플 수는 config.json의 dataset 섹션으로도 조절 가능):
 python dataset_generation/make_dataset.py -n realistic/dp0.001_mf0.01_rf0.01_gd0.008 \
        -p 0.005 --train-samples 1000000 --test-samples 100000
 
@@ -319,7 +320,7 @@ python train.py --model gnn --smoke            # GNN
 python train.py --model cnn --code surface --smoke   # rotated surface d=3
 python train.py --model cnn -n realistic/dp0.001_mf0.01_rf0.01_gd0.008 -p 0.005 --mwpm
 python train.py --all --mwpm                   # 전체 그리드 + 기준선 표
-python train.py                                # train_sweep.json 있으면 자동 스윕
+python train.py                                # config.json sweep 섹션 있으면 자동 스윕
 python train.py --config none                  # 스윕 끄고 기본 단일 설정
 
 # 3) MWPM 기준선 표만 따로 보고 싶을 때
@@ -341,24 +342,30 @@ analyze는 잡이 아직 안 끝났으면 알아서 폴링하며 기다렸다가
 한 리포트에 두 모델 행이 함께 나와. `--model {cnn,gnn}`은 한
 아키텍처로 제한하고 싶을 때만 주면 돼.
 
-### 설정 파일 두 개 (repo 루트)
+### 설정 파일 하나 (repo 루트의 [config.json](config.json))
 
-- **[train_options.json](train_options.json)** — *기본값* 조절: `train` 섹션은
-  학습 하이퍼파라미터(epochs, batch_size, lr, ...), `dataset` 섹션은
-  데이터셋 샘플 수(train_samples/test_samples), 최상위 `cycles`는 양쪽 공용.
-  파일이 있으면 train.py / make_dataset.py가 자동으로 읽어 기본값을
-  대체하고, CLI 인자를 명시하면 그쪽이 이겨.
-- **[train_sweep.json](train_sweep.json)** — *스윕* 정의: `runs`의 각 항목이
-  (노이즈, p, error_type, model + 하이퍼파라미터 오버라이드) 한 벌이야.
-  **repo에 기본 파일이 들어 있어** — cnn/gnn 두 run(+mwpm)이라, 인자 없이
-  돌리면 같은 데이터로 두 모델을 이어 학습해 CNN/GNN/MWPM 통합 표가 나와.
-  repo 루트에 이 파일이 있으면 make_dataset.py는 필요한 조합의 데이터셋을,
-  train.py는 항목별 학습을 **자동으로** 돌려. 선택 인자(-n/-p/-e/--all/
-  --smoke)를 명시하면 스윕 대신 그쪽이 돌고, `--config none`으로 끄거나
-  `--config 다른파일.json`으로 바꿀 수 있어. 같은 (노이즈, p, cycles)의
-  하이퍼파라미터 변형에는 `"name"`을 줘서 결과 파일 이름을 구분해.
+모든 사용자 설정이 config.json 한 파일, 섹션 네 개로 모여 있어:
 
-우선순위: `train_options.json` < CLI 인자 < 스윕 run 항목.
+- **`noise_profiles`** — 노이즈 프로파일 레지스트리. 4-파라미터 프로파일은
+  여기서 직접 추가/수정하며 탐색하면 되고, `qpu/...` 항목은
+  make_qpu_avg_profile.py가 **이 섹션만** 프로그램적으로 갱신해
+  (다른 섹션은 보존).
+- **`train` / `dataset` / 최상위 `cycles`** — *기본값* 조절: 학습
+  하이퍼파라미터(epochs, batch_size, lr, ...), 데이터셋 샘플 수
+  (train_samples/test_samples), `cycles`는 양쪽 공용. train.py /
+  make_dataset.py가 자동으로 읽고, CLI 인자를 명시하면 그쪽이 이겨.
+- **`sweep`** — *스윕* 정의: `runs`의 각 항목이 (노이즈, p, error_type,
+  model + 하이퍼파라미터 오버라이드) 한 벌이야. **기본 sweep이 들어
+  있어** — cnn/gnn 두 run(+mwpm)이라, 인자 없이 돌리면 같은 데이터로 두
+  모델을 이어 학습해 CNN/GNN/MWPM 통합 표가 나와. 섹션이 있으면
+  make_dataset.py는 필요한 조합의 데이터셋을, train.py는 항목별 학습을
+  **자동으로** 돌려. 선택 인자(-n/-p/-e/--all/--smoke)를 명시하면 스윕
+  대신 그쪽이 돌고, `--config none`으로 끄거나 `--config 다른파일.json`
+  (별도 스윕 JSON 또는 다른 config 파일)으로 바꿀 수 있어. 같은 (노이즈,
+  p, cycles)의 하이퍼파라미터 변형에는 `"name"`을 줘서 결과 파일 이름을
+  구분해.
+
+우선순위: `config.json` 기본값 < CLI 인자 < 스윕 run 항목.
 
 ### 산출물이 저장되는 위치
 
@@ -441,8 +448,8 @@ sbatch train.sbatch --model gnn --all       # GNN 학습
 # 통합 파이프라인: 규약 게이트 -> 데이터셋 생성 -> 학습 -> QPU 검증
 sbatch pipeline.sbatch --all --mwpm
 DATASET_ARGS="--smoke" sbatch pipeline.sbatch --smoke   # 빠른 end-to-end 확인
-# train_sweep.json이 있으면 데이터셋 생성+학습이 자동으로 스윕을 돈다:
-SWEEP_CONFIG=다른스윕.json sbatch pipeline.sbatch       # 다른 스윕 파일 지정
+# config.json에 sweep 섹션이 있으면 데이터셋 생성+학습이 자동으로 스윕을 돈다:
+SWEEP_CONFIG=다른스윕.json sbatch pipeline.sbatch       # 별도 스윕 파일 지정
 SWEEP_CONFIG=none sbatch pipeline.sbatch                # 스윕 끄기
 HW_ARGS="--dry-run" sbatch pipeline.sbatch              # QPU 단계는 리허설만
 SKIP_HW=1 sbatch pipeline.sbatch                        # QPU 단계 끄기
@@ -490,8 +497,8 @@ model/                  채워야 할 파일 (cnn_skeleton.py, gnn_skeleton.py) 
 evaluation/             지표 — head-LER(목표 지표) + ECR/parity_LER(진단용)
 baseline/               MWPM (PyMatching) 기준선
 train.py                학습 진입점 (완성본, 수정할 필요 없어; --model/--code)
-train_options.json      기본 하이퍼파라미터 / 데이터셋 샘플 수 (자동 적용, §3)
-train_sweep.json        스윕 정의 — 있으면 자동 적용, --config none으로 끔 (§3)
+config.json             통합 설정 — noise_profiles(프로파일 레지스트리) /
+                        train·dataset(기본값) / sweep(자동 적용, §3)
 train.sbatch            slurm 학습 job (§6)
 pipeline.sbatch         slurm 통합 파이프라인:
                         게이트 -> 데이터셋 -> 학습 -> QPU 검증 (§6)

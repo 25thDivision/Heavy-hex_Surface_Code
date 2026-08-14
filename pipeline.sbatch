@@ -33,10 +33,10 @@
 # (submit->대기->analyze 원샷)를 실행하고, HW_ARGS는 그 뒤에 공통으로
 # 붙는다 (--shots, --dry-run 등). analyze 단독 재실행처럼 서브커맨드를
 # 명시하고 싶으면 pipeline이 아니라 run_hw.py를 직접 실행할 것.
-# 스윕: repo 루트에 train_sweep.json이 있으면 데이터셋 생성과 학습이
+# 스윕: config.json의 "sweep" 섹션이 있으면 데이터셋 생성과 학습이
 # 자동으로 그 스윕 조합을 돈다 (-n/-p 같은 선택 인자를 주면 그쪽 우선).
-# SWEEP_CONFIG=경로 로 다른 스윕 파일을, =none 으로 비활성화를 지정.
-# 기본 하이퍼파라미터/샘플 수는 train_options.json이 있으면 자동 적용.
+# SWEEP_CONFIG=경로 로 별도 스윕 파일을, =none 으로 비활성화를 지정.
+# 기본 하이퍼파라미터/샘플 수는 config.json의 train/dataset 섹션 자동 적용.
 # (스키마는 train.py 도크스트링 참고)
 # QPU 단계는 keys.json이 있을 때만 실행 — 실제 QPU 잡을 제출하므로
 # 반복 제출을 원치 않으면 SKIP_HW=1을 쓸 것. 두 백엔드는 순차 실행

@@ -5,14 +5,15 @@ QPU calibration-average noise profile generator (mode: qpu_avg_v1)
 Scans hardware/runs/*/ (the per-submission snapshot folders written by
 hardware/run_hw.py), selects the latest N non-dry-run submissions of ONE
 backend AND one code family, averages their calibration snapshots, and
-registers the result as a noise profile in noise_profiles.json:
+registers the result in the "noise_profiles" section of config.json
+(ONLY that section is updated — the rest of the file is preserved):
 
   name: qpu/<backend>_<code>_avg<N>_<YYYYMMDD>[_<suffix>]
         <code>     heavyhex | surface
         <YYYYMMDD> date of the NEWEST submitted_at among the averaged
                    runs (human-readable lineage marker)
         <suffix>   optional --suffix for explicit disambiguation
-  Lineage guard: if the key already exists in noise_profiles.json with a
+  Lineage guard: if the key already exists in the registry with a
   DIFFERENT provenance run-id list, the script aborts and prints the
   difference (datasets/checkpoints named after the key must never
   silently change meaning). Identical run lists just refresh provenance.
@@ -269,7 +270,9 @@ def main():
     ap.add_argument("--suffix", default=None,
                     help="optional explicit name suffix "
                          "(qpu/<backend>_<code>_avg<N>_<date>_<suffix>)")
-    ap.add_argument("--profiles", default=str(_ROOT / "noise_profiles.json"))
+    ap.add_argument("--config", default=str(_ROOT / "config.json"),
+                    help="config file whose noise_profiles section is "
+                         "updated (default: repo config.json)")
     ap.add_argument("--dry-run", action="store_true",
                     help="print the profile instead of writing it")
     args = ap.parse_args()
@@ -318,7 +321,10 @@ def main():
     if args.dry_run:
         print(json.dumps({name: profile}, indent=2))
         return
-    profiles = json.load(open(args.profiles))
+    # update ONLY the noise_profiles section; every other config.json
+    # section (train/dataset/sweep/cycles) is written back untouched
+    cfg = json.load(open(args.config))
+    profiles = cfg.setdefault("noise_profiles", {})
     if name in profiles:
         # lineage guard: the same key must always mean the same runs —
         # datasets/checkpoints carry the key in their names
@@ -336,10 +342,10 @@ def main():
         print(f"NOTE: {name} already registered with the same runs — "
               f"refreshing provenance.")
     profiles[name] = profile
-    with open(args.profiles, "w") as f:
-        json.dump(profiles, f, indent=2)
+    with open(args.config, "w") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
         f.write("\n")
-    print(f"registered -> {args.profiles}")
+    print(f"registered -> {args.config} [noise_profiles]")
     gate = ("verification/verify_equivalence.py" if args.code == "heavyhex"
             else "verification/verify_rotatedSurface3.py")
     print(f"next: python dataset_generation/make_dataset.py --code "

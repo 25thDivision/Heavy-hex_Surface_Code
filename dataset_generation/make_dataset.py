@@ -31,7 +31,7 @@ Usage:
   python dataset_generation/make_dataset.py --smoke     # quick smoke (10k/2k)
   python dataset_generation/make_dataset.py             # full grid (default shots)
   python dataset_generation/make_dataset.py -n realistic/dp0.001_mf0.01_rf0.01_gd0.008 -p 0.01
-  python dataset_generation/make_dataset.py --config train_sweep.json
+  python dataset_generation/make_dataset.py --config other_sweep.json
       # every (noise, p, type, cycles) combo the sweep config needs
 """
 import argparse
@@ -45,7 +45,8 @@ import numpy as np
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
-from dataset_generation import load_options, load_sweep  # noqa: E402
+from dataset_generation import (  # noqa: E402
+    load_options, load_sweep, has_sweep, CONFIG_PATH)
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     build_stim_circuit, sample_flips, syndrome_tensor, logical_label,
     noise_tag, is_qpu_profile, DISTANCE, ERROR_TYPES, ERROR_RATES,
@@ -80,15 +81,15 @@ def parse_args():
     ap.add_argument("--config", default=None,
                     help="sweep-config JSON; generates every (noise, p, "
                          "type, cycles) combo the sweep needs. Defaults "
-                         "to train_sweep.json at the repo root when no "
+                         "to config.json's sweep section when no "
                          "selection args (-n/-p/-e/--smoke) are given; "
                          "'none' disables")
-    # train_options.json (repo root, if present) replaces the hardcoded
-    # defaults (e.g. train/test sample counts); explicit CLI args still win
+    # config.json's "dataset" section (repo root, if present) replaces the
+    # hardcoded defaults (e.g. sample counts); explicit CLI args still win
     opts = load_options("dataset")
     if opts:
         ap.set_defaults(**opts)
-        print(f"train_options.json: {opts}")
+        print(f"config.json [dataset]: {opts}")
     args = ap.parse_args()
     # auto-sweep: no explicit config and no explicit selection -> pick up
     # the default sweep file if it exists
@@ -96,9 +97,8 @@ def parse_args():
         args.config = None
     elif args.config is None and not (args.noise or args.rates
                                       or args.error_types or args.smoke):
-        default_sweep = _ROOT / "train_sweep.json"
-        if default_sweep.exists():
-            args.config = str(default_sweep)
+        if has_sweep():
+            args.config = str(CONFIG_PATH)
     return args
 
 
