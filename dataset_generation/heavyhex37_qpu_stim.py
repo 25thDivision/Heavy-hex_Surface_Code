@@ -19,7 +19,7 @@ of THAT physical qubit / edge):
                              initial reset (same Error_Type/Error_Rate
                              axis as the abstract datasets)
 
-NOT modeled (documented limitation, also in README_revised.md):
+NOT modeled (documented limitation, also in README.md):
   * calibration drift between/within runs (values are averages)
   * T1/T2 idle decoherence and delay errors (incl. DD behavior)
   * measurement crosstalk / correlated readout errors

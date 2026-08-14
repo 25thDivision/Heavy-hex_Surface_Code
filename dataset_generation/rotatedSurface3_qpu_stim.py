@@ -23,7 +23,7 @@ rotatedSurface3 LOCAL index 0..16 — data 0-8, ancillas 9-16 in CYCLE_ORDER —
                              initial reset (same Error_Type/Error_Rate
                              axis as the abstract datasets)
 
-NOT modeled (documented limitation, also in README_revised.md):
+NOT modeled (documented limitation, also in README.md):
   * calibration drift between/within runs (values are averages)
   * T1/T2 idle decoherence and delay errors (incl. DD behavior)
   * measurement crosstalk / correlated readout errors

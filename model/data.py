@@ -24,7 +24,7 @@ def npz_path(data_dir, code, noise, split, cycles, p, error_type):
     The <code> level ({heavyhex, surface}) was introduced with the --code
     axis; pre-existing files saved directly under dataset/<noise_tag>/
     belong to heavyhex and can be moved in with a one-line mv (see
-    README_revised.md)."""
+    README.md)."""
     return (Path(data_dir) / code / noise_tag(noise)
             / f"{split}_d{DISTANCE}_c{cycles}_p{p}_{error_type}.npz")
 

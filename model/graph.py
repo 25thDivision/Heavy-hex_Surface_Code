@@ -18,7 +18,7 @@ Z-stabilizer parities of the final readout, and the logical Z operator
 (data [69,87,105]) is not a product of Z-stabilizers, so the logical
 label is not derivable from them. It IS an input asymmetry vs the CNN,
 whose (2C,4,5) tensor carries no final-data-derived syndrome (see
-README_revised.md).
+README.md).
 
 Input tensor: the dataset npz format is unchanged. `augment_features`
 appends ONE extra channel to the (B, 2C, 4, 5) syndrome tensor carrying
