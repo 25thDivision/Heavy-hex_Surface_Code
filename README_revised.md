@@ -201,41 +201,59 @@ GNN: model/gnn_skeleton.py (P1 마일스톤에서 추가; 같은 인터페이스
 
 실제 QPU 제출 기록(hardware/runs/의 스냅샷)에서 **캘리브레이션 평균
 노이즈 프로파일**을 만들어, 하드웨어와 같은 구조의 Stim 회로로
-데이터셋을 생성/학습할 수 있어:
+데이터셋을 생성/학습할 수 있어. heavyhex와 surface **양쪽 코드 모두**
+지원돼:
 
 ```bash
-# 1) 프로파일 생성: 같은 백엔드의 non-dry-run 최신 N개(기본 5)를 평균
-python dataset_generation/make_qpu_avg_profile.py                # 자동 백엔드
-python dataset_generation/make_qpu_avg_profile.py --n-runs 3 --backend ibm_yonsei
-# -> noise_profiles.json에 qpu/<backend>_avg<N>_<해시8> 이름으로 등록
+# 1) 프로파일 생성: 같은 백엔드·같은 코드의 non-dry-run 최신 N개(기본 5) 평균
+python dataset_generation/make_qpu_avg_profile.py                    # heavyhex
+python dataset_generation/make_qpu_avg_profile.py --code surface --backend ibm_miami
+# -> noise_profiles.json에 qpu/<backend>_<code>_avg<N>_<YYYYMMDD> 로 등록
+#    (<YYYYMMDD> = 평균에 포함된 run들의 submitted_at 중 최신 날짜)
 
-# 2) 게이트 (섹션 [E] 포함 ALL PASS 필수) -> 데이터셋 -> 학습
-python verification/verify_equivalence.py
-python dataset_generation/make_dataset.py -n qpu/<이름> --smoke
-python train.py --model gnn -n qpu/<이름> -p 0.005 --mwpm
+# 2) 코드별 게이트 ALL PASS 필수 -> 데이터셋 -> 학습
+python verification/verify_equivalence.py    # heavyhex ([E] 포함)
+python verification/verify_rsc3.py           # surface ([G] 포함)
+python dataset_generation/make_dataset.py --code surface -n qpu/<이름> --smoke
+python train.py --model gnn --code surface -n qpu/<이름> -p 0.005 --mwpm
 ```
 
 - **추출값**: run별 target.pkl(폴백: properties.json)에서 큐빗별 readout
-  error, 1Q error(sx 우선), 물리 엣지별 2Q error를 뽑아 run 간 산술 평균 →
-  `embedding_for(backend)`로 37q 패치 라벨에 매핑해 기록. 백엔드가 다른
-  run은 절대 섞지 않고, run이 부족하면 있는 만큼 평균(경고 출력).
-- **버저닝**: 이름의 `<해시8>`은 run id 목록의 sha256 앞 8자리 — run
-  조합이 바뀌면 프로파일 이름이 바뀌어서, 그 이름이 박힌 데이터셋
-  폴더/체크포인트의 계보가 유지돼. provenance(run id, submitted_at,
-  소스 파일, 생성 시각)도 프로파일에 남아 (로컬 경로는 기록 안 함).
-- **회로**: `qpu/` 프로파일은 추상 25q 회로 대신
-  [dataset_generation/heavyhex37_qpu_stim.py](dataset_generation/heavyhex37_qpu_stim.py)의
-  **하드웨어형 37q Stim 회로**(bridge 포함, no-reset ancilla,
-  depth-7 fold 구조 미러링)로 생성돼. 게이트/측정마다 해당 물리
-  큐빗·엣지의 평균 캘리브레이션 에러가 붙어 (CX→DEPOLARIZE2,
-  H→DEPOLARIZE1(sx 프록시), 측정 직전→X_ERROR readout). detector는 raw
-  측정 기록의 XOR 전개로 정의되지만 순서는 기존 `_append_detectors`와
-  동일해서 텐서/MWPM 재구성 로직은 그대로야. `qpu/` 프로파일은 기본
-  그리드(ALL_NOISE)에 **포함되지 않아** — `-n qpu/<이름>`으로 명시 선택.
+  error, 1Q error(sx 우선), 물리 엣지별 2Q error를 뽑아 run 간 산술 평균.
+  패치 매핑은 코드별로: heavyhex는 `embedding_for(backend)`로 **37q 패치
+  물리 라벨**, surface는 `rsc3.embedding_for_surface(backend)`로 **rsc3
+  로컬 인덱스 0..16**(ALL_COORDS 순서: data 0–8, ancilla 9–16)에 기록.
+  run 선택은 job.json의 backend/submitted_at/dry_run/**code**로 판별
+  (code 필드가 없는 옛 run은 heavyhex로 간주, dry-run 제외, 백엔드 혼합
+  금지, 부족하면 있는 만큼 평균 + 경고).
+- **이름 규약과 계보 보호**: 키는
+  `qpu/<backend>_<code>_avg<N>_<YYYYMMDD>[_<suffix>]`. 같은 키가 이미
+  등록돼 있는데 provenance의 run id 목록이 지금 선택과 **다르면 덮어쓰지
+  않고 에러로 중단**하며 차이를 출력해 (그 이름이 박힌 데이터셋/체크포인트의
+  의미가 조용히 바뀌는 것 방지). 같은 run 목록이면 provenance만 갱신.
+  구분이 필요하면 `--suffix`로 명시적 이름을 만들어. provenance(run id,
+  submitted_at, 소스 파일, code, 생성 시각)가 프로파일에 남고 로컬
+  경로는 기록하지 않아. **옛 해시 형식 키**(`qpu/<backend>_avg<N>_<해시8>`)는
+  mode 기반이라 계속 동작하지만 전부 heavyhex이며, 새 규약으로 재생성을
+  권장해.
+- **회로**: `qpu/` 프로파일은 추상 회로 대신 코드별 **하드웨어형 Stim
+  회로**로 생성돼 — heavyhex는
+  [heavyhex37_qpu_stim.py](dataset_generation/heavyhex37_qpu_stim.py)
+  (37q, bridge 포함, no-reset, depth-7 fold 미러), surface는
+  [rsc3_qpu_stim.py](dataset_generation/rsc3_qpu_stim.py)(17q, no-reset,
+  고정 4-레이어 hook-safe CX 스케줄). 게이트/측정마다 해당 물리 큐빗·엣지의
+  평균 캘리브레이션 에러가 붙어 (CX→DEPOLARIZE2, H→DEPOLARIZE1(sx 프록시),
+  측정 직전→X_ERROR readout). detector는 raw 측정 기록의 XOR 전개로
+  정의되지만 순서는 각 코드의 `_append_detectors`와 동일해서 텐서/MWPM
+  재구성 로직은 그대로야. `qpu/` 프로파일은 기본 그리드(ALL_NOISE)에
+  **포함되지 않고**(`-n qpu/<이름>` 명시 선택), 프로파일의 code와 다른
+  `--code`로 쓰려 하면 에러로 거부돼.
 - **미반영 노이즈 항목** (평균 캘리브레이션 모델의 한계):
   캘리브레이션 드리프트(run 간/내 변화), T1/T2 idle 감쇠·delay 에러
   (DD 동작 포함), 측정 crosstalk/상관 readout 에러, coherent(비-Pauli)
-  에러 — H는 sx 프록시 1회의 depolarizing으로 근사돼. QPU 실측과의
+  에러 — H는 sx 프록시 1회의 depolarizing으로 근사돼. 또한 **2Q 에러는
+  네이티브 게이트 벤치마크 값을 CX 위치에 부착하는 프록시**야
+  (heavyhex 백엔드의 ECR, miami의 CZ — 동일한 근사). QPU 실측과의
   잔차는 이 항목들에서 나온다고 보면 돼.
 
 ### 최종 비교표 산출 방법 (MWPM | CNN/GNN × Stim | CNN/GNN × QPU-cal)
@@ -264,8 +282,10 @@ python hardware/run_hw.py analyze --job-id <ID> --model gnn  # GNN 체크포인�
 각 실행의 summary 표(모델·noise·p별 best epoch의 ler / mwpm_ler /
 LER/MWPM ratio)를 세로로 이어 붙이면 MWPM 기준선 대비 CNN/GNN ×
 {Stim 프로파일, QPU-cal 프로파일, (가능하면) 실기기}의 최종 비교표가 돼.
-surface 코드도 `--code surface`로 동일하게 반복하면 된다 (단, qpu-cal
-프로파일은 현재 heavyhex 전용).
+**surface(miami)도 `--code surface`로 동일하게 3자 비교가 가능**해 —
+전제는 miami에 non-dry-run 제출 기록이 쌓여 있어서
+`make_qpu_avg_profile.py --code surface`로 프로파일을 만들 수 있어야
+한다는 것 (verify_rsc3 [G] 포함 ALL PASS 후 데이터셋 생성).
 
 ## 2. 환경 설정
 
@@ -452,9 +472,10 @@ heavyhex_circuits/      고정된 회로 자산 (재작성하지 말고 import�
 rsc_circuits/           rotated surface code d=3 정의 + 하드웨어 회로 +
                         ibm_miami 45도 임베딩 (rsc3.py)
 dataset_generation/     Stim 회로 생성기(heavyhex33_stim.py, rsc3_stim.py,
-                        heavyhex37_qpu_stim.py) + 데이터셋 생성
-                        (make_dataset.py, --code 축) + QPU 프로파일 생성기
-                        (make_qpu_avg_profile.py)
+                        heavyhex37_qpu_stim.py, rsc3_qpu_stim.py) +
+                        데이터셋 생성(make_dataset.py, --code 축) +
+                        QPU 프로파일 생성기(make_qpu_avg_profile.py,
+                        --code 축)
 verification/           규약 게이트 스크립트 (§4) — verify_equivalence.py
                         (heavyhex + qpu 회로), verify_rsc3.py (surface)
 model/                  채워야 할 파일 (cnn_skeleton.py, gnn_skeleton.py) +

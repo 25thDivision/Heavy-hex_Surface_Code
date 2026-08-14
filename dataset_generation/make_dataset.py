@@ -128,13 +128,27 @@ def code_generator(code, noise, cycles, et, p):
     sampler returns (check-value matrix, final-data bits); qpu_avg
     profiles route to the hardware-shaped 37q circuit (raw flips
     XOR-chained back to check values)."""
+    if is_qpu_profile(noise):
+        # a qpu_avg profile is bound to one code family — refuse a
+        # mismatch instead of attaching foreign calibration values
+        prof_code = NOISE_PROFILES[noise].get("code", "heavyhex")
+        if prof_code != code:
+            raise ValueError(
+                f"noise profile '{noise}' is a '{prof_code}' calibration "
+                f"profile — it cannot generate --code {code} datasets")
     if code == "surface":
-        if is_qpu_profile(noise):
-            raise ValueError("qpu_avg profiles are heavy-hex only for now")
         from dataset_generation.rsc3_stim import (
             build_rsc3_stim_circuit, sample_flips_rsc3,
             syndrome_tensor_rsc3, logical_label_rsc3)
         from rsc_circuits.rsc3 import GRID_SHAPE, NUM_DATA
+        if is_qpu_profile(noise):
+            # calibration-averaged profile -> hardware-shaped 17q circuit
+            from dataset_generation.rsc3_qpu_stim import (
+                build_rsc3_qpu_stim_circuit, sample_rsc3_qpu_flips)
+            return (build_rsc3_qpu_stim_circuit(cycles, et, p,
+                                                NOISE_PROFILES[noise]),
+                    sample_rsc3_qpu_flips, syndrome_tensor_rsc3,
+                    logical_label_rsc3, GRID_SHAPE, NUM_DATA)
         return (build_rsc3_stim_circuit(cycles, et, p, noise),
                 sample_flips_rsc3, syndrome_tensor_rsc3,
                 logical_label_rsc3, GRID_SHAPE, NUM_DATA)
@@ -196,10 +210,12 @@ def main():
             continue
         # folder = <code>/<parameter tag> (no 'realistic/' level),
         # e.g. dataset/heavyhex/dp0.001_mf0.01_rf0.01_gd0.008/
-        ndir = outdir / args.code / noise_tag(noise)
-        ndir.mkdir(parents=True, exist_ok=True)
+        # resolve the generator BEFORE creating the folder so a refused
+        # combo (e.g. code-mismatched qpu profile) leaves nothing behind
         (circuit, sampler, tensor_fn, logical_fn,
          grid, num_data) = code_generator(args.code, noise, cycles, et, p)
+        ndir = outdir / args.code / noise_tag(noise)
+        ndir.mkdir(parents=True, exist_ok=True)
         for split, n, seed_off in (("train", n_train, 0),
                                    ("test", n_test, 1)):
             fname = ndir / (f"{split}_d{DISTANCE}_c{cycles}"

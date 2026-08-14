@@ -30,6 +30,16 @@ proceed until this script prints ALL PASS.
       coupling_ibm_miami.json exists at the repo root, the registered
       45-degree embedding must fit it (every stabilizer CX
       device-adjacent). Skipped when the file is absent (offline).
+  [G] Hardware-shaped rsc3 Stim circuit (rsc3_qpu_stim, the surface
+      QPU calibration-profile generator; no-reset ancillas):
+      (a) with zero noise, every detector is deterministic
+      (b) injected single errors fire the same checks as Aer
+          (RSC3Hardware; raw values through the per-ancilla XOR chain)
+      (c) the deterministic detector stream (incl. final-Z detectors)
+          reconstructed from raw values is bit-identical to the abstract
+          rsc3 Stim circuit's AND actually fires (no vacuous pass)
+      Dataset generation from qpu/* surface profiles must NOT proceed
+      until this section passes together with the rest (ALL PASS).
 """
 import sys
 from pathlib import Path
@@ -48,6 +58,8 @@ from rsc_circuits.rsc3 import (  # noqa: E402
 from dataset_generation.rsc3_stim import (  # noqa: E402
     build_rsc3_stim_circuit, split_rsc3_sample, check_matrix_from_dict_rsc3,
     detectors_from_dataset_rsc3, num_detectors)
+from dataset_generation.rsc3_qpu_stim import (  # noqa: E402
+    build_rsc3_qpu_stim_circuit)
 
 STIM_SHOTS = 512
 AER_SHOTS = 400
@@ -218,6 +230,53 @@ def main():
               f"{'(horizontal)' if ctype == 'Z' and len(pair) == 2 else ''}"
               f" stim==resid=={np.array_equal(s_hook, s_resid)} "
               f"aer==resid=={np.array_equal(a_hook, a_resid)} "
+              f"{'PASS' if good else 'FAIL'}")
+
+    # [G] hardware-shaped rsc3 Stim circuit (surface QPU-profile path)
+    # (a) noiseless detector determinism
+    cq = build_rsc3_qpu_stim_circuit(CYCLES)
+    detq = np.asarray(cq.compile_detector_sampler().sample(
+        shots=STIM_SHOTS, append_observables=True), dtype=np.uint8)
+    ga_ok = (detq.sum() == 0
+             and detq.shape[1] == num_detectors(CYCLES) + 1)
+    print(f"[G-a] rsc3 HW-shaped Stim noiseless detectors+observable "
+          f"all-zero: {'PASS' if ga_ok else 'FAIL'} "
+          f"(shape={detq.shape}, sum={detq.sum()})")
+    ok &= ga_ok
+
+    # (b) single-error signatures vs Aer, (c) deterministic
+    #     detector-stream equality vs the abstract rsc3 Stim circuit —
+    #     detectors reconstructed from RAW values (stim's own detector
+    #     sampler absorbs explicit Paulis into its reference, see the
+    #     stim_det_stream note)
+    def qpu_value_run(inject=None, shots=64):
+        c = build_rsc3_qpu_stim_circuit(CYCLES, inject=inject)
+        raw = np.asarray(c.compile_sampler().sample(shots), dtype=np.uint8)
+        syn, dat = split_rsc3_sample(raw, CYCLES)
+        mat = check_matrix_from_dict_rsc3(check_values(syn, CYCLES), CYCLES)
+        return mat, dat
+
+    print("[G-b/c] rsc3 HW-shaped Stim vs Aer signatures / vs abstract "
+          "rsc3 Stim detector streams:")
+    for pauli, dc in cases:
+        inject = (pauli, dc, 0)
+        q_mat, q_dat = qpu_value_run(inject)
+        f_qpu = fired_at_cycle1(q_mat, np.ones(q_mat.shape[0]))
+        a_mat, _, a_w = aer_run(inject=inject)
+        f_aer = fired_at_cycle1(a_mat, a_w)
+        stabs = Z_STABS if pauli == "X" else X_STABS
+        exp = sorted(n for n, s in stabs.items() if dc in s)
+        s_syn, s_dat, _ = stim_run(inject=inject)
+        det_abs = detectors_from_dataset_rsc3(s_syn, s_dat, CYCLES)
+        det_qpu = detectors_from_dataset_rsc3(q_mat, q_dat, CYCLES)
+        stream_ok = (bool((det_abs == det_abs[0]).all())
+                     and bool((det_qpu == det_qpu[0]).all())
+                     and np.array_equal(det_abs[0], det_qpu[0])
+                     and det_abs[0].any())          # must actually fire
+        good = (f_qpu == f_aer == exp) and stream_ok
+        ok &= good
+        print(f"  {pauli} {dc}: qpu={f_qpu} aer={f_aer} exp={exp} "
+              f"detstream={'==' if stream_ok else '!='}abstract "
               f"{'PASS' if good else 'FAIL'}")
 
     # [F] ibm_miami embedding (informational; needs a fetched coupling map)

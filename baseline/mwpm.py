@@ -42,15 +42,24 @@ def build_matching(num_cycles, error_type, p, noise_profile,
                    code="heavyhex"):
     """Matching decoder from the DEM of the noisy reference circuit.
 
-    heavyhex: plain 4-parameter profiles use the abstract 25q circuit;
-    QPU calibration profiles (mode: qpu_avg_v1) use the hardware-shaped
-    37q circuit — its detectors follow the same order, so the same
-    detector reconstructions feed either Matching object.
-    surface: the abstract rsc3 circuit."""
+    Plain 4-parameter profiles use the code's abstract circuit (25q
+    heavy-hex / 17q rsc3); QPU calibration profiles (mode: qpu_avg_v1)
+    use the code's hardware-shaped circuit — detectors follow the same
+    order either way, so the same detector reconstructions feed any of
+    the Matching objects."""
     if code == "surface":
-        from dataset_generation.rsc3_stim import build_rsc3_stim_circuit
-        circuit = build_rsc3_stim_circuit(num_cycles, error_type, p,
-                                          noise_profile)
+        if is_qpu_profile(noise_profile):
+            from dataset_generation.rsc3_qpu_stim import (
+                build_rsc3_qpu_stim_circuit)
+            prof = (NOISE_PROFILES[noise_profile]
+                    if isinstance(noise_profile, str) else noise_profile)
+            circuit = build_rsc3_qpu_stim_circuit(num_cycles, error_type,
+                                                  p, prof)
+        else:
+            from dataset_generation.rsc3_stim import (
+                build_rsc3_stim_circuit)
+            circuit = build_rsc3_stim_circuit(num_cycles, error_type, p,
+                                              noise_profile)
     elif is_qpu_profile(noise_profile):
         from dataset_generation.heavyhex37_qpu_stim import (
             build_qpu_stim_circuit)

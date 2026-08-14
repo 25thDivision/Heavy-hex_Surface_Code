@@ -4,13 +4,21 @@ QPU calibration-average noise profile generator (mode: qpu_avg_v1)
 ==================================================================
 Scans hardware/runs/*/ (the per-submission snapshot folders written by
 hardware/run_hw.py), selects the latest N non-dry-run submissions of ONE
-backend, averages their calibration snapshots, and registers the result
-as a noise profile in noise_profiles.json:
+backend AND one code family, averages their calibration snapshots, and
+registers the result as a noise profile in noise_profiles.json:
 
-  name: qpu/<backend>_avg<N>_<hash8>
-        (hash8 = first 8 hex chars of sha256 over the sorted run-id
-         list — a different run combination gets a different name, so
-         datasets/checkpoints generated from it keep their lineage)
+  name: qpu/<backend>_<code>_avg<N>_<YYYYMMDD>[_<suffix>]
+        <code>     heavyhex | surface
+        <YYYYMMDD> date of the NEWEST submitted_at among the averaged
+                   runs (human-readable lineage marker)
+        <suffix>   optional --suffix for explicit disambiguation
+  Lineage guard: if the key already exists in noise_profiles.json with a
+  DIFFERENT provenance run-id list, the script aborts and prints the
+  difference (datasets/checkpoints named after the key must never
+  silently change meaning). Identical run lists just refresh provenance.
+  Keys in the old hash format (qpu/<backend>_avg<N>_<hash8>) keep
+  working (is_qpu_profile is mode-based) but are heavyhex-only;
+  regeneration under the new naming is recommended.
 
 Per-run extraction (target.pkl preferred, properties.json fallback):
   * per-qubit readout error            (measure)
@@ -18,27 +26,36 @@ Per-run extraction (target.pkl preferred, properties.json fallback):
   * per-physical-edge 2Q gate error    (any 2-qubit op: ecr/cz/cx;
                                         directions averaged)
 Values are arithmetically averaged across runs (per quantity, over the
-runs where it is present), then mapped from device qubits to the 37q
-patch labels through heavyhex_37q.embedding_for(backend).
+runs where it is present), then mapped from device qubits to patch
+labels:
+  * heavyhex: 37q patch physical labels (heavyhex_37q.embedding_for)
+  * surface : rsc3 patch LOCAL indices 0..16 in rsc_circuits.rsc3
+              ALL_COORDS order (data 0-8, ancillas 9-16 in CYCLE_ORDER),
+              device qubits via rsc3.embedding_for_surface; edges from
+              rsc3.required_edges_surface()
 
-The profile stores provenance (run ids, submitted_at, per-run source,
-generation time) but NO local absolute paths. Runs of different backends
-are never mixed — pass --backend if the runs folder contains several.
+Run selection: job.json's backend / submitted_at / dry_run / code decide
+membership — dry-runs are excluded, runs of another code are excluded
+(a missing "code" field means heavyhex, the pre-code-axis format), and
+runs of different backends are never mixed (pass --backend if the runs
+folder contains several). The profile stores provenance (run ids,
+submitted_at, per-run source, code, generation time) but NO local
+absolute paths.
 
-The profile is consumed by dataset_generation/heavyhex37_qpu_stim.py
-(hardware-shaped 37q Stim circuit); the plain 4-parameter profiles keep
-using heavyhex33_stim.build_stim_circuit. Profiles with a "mode" key are
-excluded from the default training grid (ALL_NOISE) — select them
+Consumers: heavyhex profiles -> heavyhex37_qpu_stim (37q circuit),
+surface profiles -> rsc3_qpu_stim (17q circuit). Plain 4-parameter
+profiles keep using the abstract generators. Profiles with a "mode" key
+are excluded from the default training grid (ALL_NOISE) — select them
 explicitly with -n qpu/<name>.
 
 Usage:
   python dataset_generation/make_qpu_avg_profile.py                 # latest 5
   python dataset_generation/make_qpu_avg_profile.py --n-runs 3
-  python dataset_generation/make_qpu_avg_profile.py --backend ibm_yonsei
+  python dataset_generation/make_qpu_avg_profile.py --code surface \\
+         --backend ibm_miami
   python dataset_generation/make_qpu_avg_profile.py --dry-run       # print only
 """
 import argparse
-import hashlib
 import json
 import pickle
 import sys
@@ -139,8 +156,12 @@ def extract_run(run_dir):
 # ------------------------------------------------------------------
 # run selection / averaging / patch mapping
 # ------------------------------------------------------------------
-def select_runs(runs_dir, backend, n_runs):
-    """Latest n_runs non-dry-run folders of ONE backend (never mixed)."""
+def select_runs(runs_dir, backend, n_runs, code):
+    """Latest n_runs non-dry-run folders of ONE backend and one code.
+
+    job.json's "code" field filters the code family; runs without the
+    field (pre-code-axis submissions) count as heavyhex. Backends are
+    never mixed."""
     cands = []
     for d in sorted(Path(runs_dir).iterdir()):
         meta_path = d / "job.json"
@@ -149,10 +170,13 @@ def select_runs(runs_dir, backend, n_runs):
         meta = json.load(open(meta_path))
         if meta.get("dry_run"):
             continue
+        if meta.get("code", "heavyhex") != code:
+            continue
         cands.append((meta.get("backend"), meta.get("submitted_at", ""), d))
     backends = sorted({b for b, _, _ in cands})
     if not cands:
-        sys.exit(f"no non-dry-run submissions found under {runs_dir}")
+        sys.exit(f"no non-dry-run '{code}' submissions found under "
+                 f"{runs_dir}")
     if backend is None:
         if len(backends) > 1:
             sys.exit(f"runs of several backends present ({backends}) — "
@@ -161,11 +185,12 @@ def select_runs(runs_dir, backend, n_runs):
     picked = sorted([c for c in cands if c[0] == backend],
                     key=lambda c: c[1], reverse=True)[:n_runs]
     if not picked:
-        sys.exit(f"no non-dry-run submissions of backend '{backend}' "
-                 f"(available: {backends})")
+        sys.exit(f"no non-dry-run '{code}' submissions of backend "
+                 f"'{backend}' (available: {backends})")
     if len(picked) < n_runs:
-        print(f"WARNING: only {len(picked)} run(s) of '{backend}' available "
-              f"(requested {n_runs}) — averaging over what exists.")
+        print(f"WARNING: only {len(picked)} run(s) of '{backend}'/{code} "
+              f"available (requested {n_runs}) — averaging over what "
+              f"exists.")
     return backend, picked
 
 
@@ -182,13 +207,31 @@ def average_profiles(per_run):
     return out
 
 
-def map_to_patch(backend, readout, err1q, err2q):
-    """Device-qubit keyed calib -> 37q patch-label keyed profile fields."""
+def _patch_layout(code, backend):
+    """(patch labels, patch edges, label -> device qubit) of a code.
+
+    heavyhex labels = 37q physical labels; surface labels = rsc3 LOCAL
+    indices (ALL_COORDS order — the module's existing constant, no new
+    labeling scheme)."""
+    if code == "surface":
+        from rsc_circuits.rsc3 import (
+            ALL_COORDS, L, embedding_for_surface, required_edges_surface)
+        emb_c = embedding_for_surface(backend)
+        labels = [L[c] for c in ALL_COORDS]           # 0..16
+        dev_of = {L[c]: emb_c[c] for c in ALL_COORDS}
+        edges = [(L[u], L[v]) for u, v in required_edges_surface()]
+        return labels, edges, dev_of
     emb = embedding_for(backend)
+    return list(ALL_PHYS), required_edges(), dict(emb)
+
+
+def map_to_patch(backend, code, readout, err1q, err2q):
+    """Device-qubit keyed calib -> patch-label keyed profile fields."""
+    labels, edges, dev_of = _patch_layout(code, backend)
     miss = []
     p_read, p_1q, p_2q = {}, {}, {}
-    for p in ALL_PHYS:
-        dq = emb[p]
+    for p in labels:
+        dq = dev_of[p]
         if dq in readout:
             p_read[str(p)] = readout[dq]
         else:
@@ -197,15 +240,15 @@ def map_to_patch(backend, readout, err1q, err2q):
             p_1q[str(p)] = err1q[dq]
         else:
             miss.append(f"1q q{dq}")
-    for u, v in required_edges():
-        dev = tuple(sorted((emb[u], emb[v])))
+    for u, v in edges:
+        dev = tuple(sorted((dev_of[u], dev_of[v])))
         key = f"{min(u, v)}-{max(u, v)}"
         if dev in err2q:
             p_2q[key] = err2q[dev]
         else:
             miss.append(f"2q {dev}")
     if miss:
-        sys.exit(f"calibration values missing for the 37q patch after "
+        sys.exit(f"calibration values missing for the {code} patch after "
                  f"averaging: {miss[:10]}{'...' if len(miss) > 10 else ''}")
     return p_read, p_1q, p_2q
 
@@ -218,13 +261,22 @@ def main():
                     help="latest N non-dry-run submissions (default 5)")
     ap.add_argument("--backend", default=None,
                     help="required only if runs of several backends exist")
+    ap.add_argument("--code", choices=["heavyhex", "surface"],
+                    default="heavyhex",
+                    help="code family — filters runs by job.json's "
+                         "'code' (missing = heavyhex) and selects the "
+                         "patch mapping")
+    ap.add_argument("--suffix", default=None,
+                    help="optional explicit name suffix "
+                         "(qpu/<backend>_<code>_avg<N>_<date>_<suffix>)")
     ap.add_argument("--profiles", default=str(_ROOT / "noise_profiles.json"))
     ap.add_argument("--dry-run", action="store_true",
                     help="print the profile instead of writing it")
     args = ap.parse_args()
 
-    backend, picked = select_runs(args.runs_dir, args.backend, args.n_runs)
-    print(f"backend {backend}: averaging {len(picked)} run(s)")
+    backend, picked = select_runs(args.runs_dir, args.backend, args.n_runs,
+                                  args.code)
+    print(f"backend {backend} / {args.code}: averaging {len(picked)} run(s)")
     per_run, sources = [], []
     for _, sub, d in picked:
         calib, src = extract_run(d)
@@ -234,19 +286,26 @@ def main():
               f"{len(calib[0])} readout / {len(calib[1])} 1q / "
               f"{len(calib[2])} 2q values")
     readout, err1q, err2q = average_profiles(per_run)
-    p_read, p_1q, p_2q = map_to_patch(backend, readout, err1q, err2q)
+    p_read, p_1q, p_2q = map_to_patch(backend, args.code,
+                                      readout, err1q, err2q)
 
     run_ids = [d.name for _, _, d in picked]
-    h8 = hashlib.sha256(",".join(sorted(run_ids)).encode()).hexdigest()[:8]
-    name = f"qpu/{backend}_avg{len(picked)}_{h8}"
+    # date suffix = newest submitted_at among the averaged runs (YYYYMMDD)
+    newest = max(sub for _, sub, _ in picked)
+    date8 = newest[:10].replace("-", "")
+    name = f"qpu/{backend}_{args.code}_avg{len(picked)}_{date8}"
+    if args.suffix:
+        name += f"_{args.suffix}"
     profile = {
         "mode": "qpu_avg_v1",
         "backend": backend,
+        "code": args.code,
         "n_runs": len(picked),
         "provenance": {
             "run_ids": run_ids,
             "submitted_at": [sub for _, sub, _ in picked],
             "source": sources,
+            "code": args.code,
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
         },
         "readout": p_read,
@@ -261,16 +320,30 @@ def main():
         return
     profiles = json.load(open(args.profiles))
     if name in profiles:
-        print(f"NOTE: {name} already registered — overwriting (same run "
-              f"combination, refreshed provenance).")
+        # lineage guard: the same key must always mean the same runs —
+        # datasets/checkpoints carry the key in their names
+        old_ids = sorted(profiles[name].get("provenance", {})
+                         .get("run_ids", []))
+        if old_ids != sorted(run_ids):
+            sys.exit(
+                f"REFUSING to overwrite {name}: it is already registered "
+                f"with a different run combination.\n"
+                f"  registered: {old_ids}\n"
+                f"  selected  : {sorted(run_ids)}\n"
+                f"Use --suffix to register the new combination under a "
+                f"distinct name (lineage of existing datasets/checkpoints "
+                f"stays intact).")
+        print(f"NOTE: {name} already registered with the same runs — "
+              f"refreshing provenance.")
     profiles[name] = profile
     with open(args.profiles, "w") as f:
         json.dump(profiles, f, indent=2)
         f.write("\n")
     print(f"registered -> {args.profiles}")
-    print(f"next: python dataset_generation/make_dataset.py -n {name} "
-          f"--smoke   (gate: verification/verify_equivalence.py ALL PASS "
-          f"first)")
+    gate = ("verification/verify_equivalence.py" if args.code == "heavyhex"
+            else "verification/verify_rsc3.py")
+    print(f"next: python dataset_generation/make_dataset.py --code "
+          f"{args.code} -n {name} --smoke   (gate: {gate} ALL PASS first)")
 
 
 if __name__ == "__main__":
