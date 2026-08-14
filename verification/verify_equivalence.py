@@ -41,8 +41,8 @@ sys.path.insert(0, str(_ROOT))
 
 from qiskit_aer import AerSimulator
 
-from heavyhex_circuits.heavyhex_37q import Z_STABS, X_STABS
-from heavyhex_circuits.heavyhex_depth7_opt_for_37q import (
+from circuits.heavyhex.heavyhex_37q import Z_STABS, X_STABS
+from circuits.heavyhex.heavyhex_depth7_opt_for_37q import (
     HeavyHex37QDepthOpt, check_values, N_CHECKS)
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     build_stim_circuit, split_stim_sample, check_matrix_from_dict,

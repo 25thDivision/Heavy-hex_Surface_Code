@@ -22,7 +22,7 @@ import os
 import numpy as np
 from itertools import combinations
 from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
-from heavyhex_circuits.diamond_generator import build_code, gf2_rank, rung_of_check
+from circuits.heavyhex.diamond_generator import build_code, gf2_rank, rung_of_check
 
 
 # --------------------------------------------------------------- solving

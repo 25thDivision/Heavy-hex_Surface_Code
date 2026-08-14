@@ -67,12 +67,12 @@ import numpy as np
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
-from heavyhex_circuits.heavyhex_37q import (  # noqa: E402
+from circuits.heavyhex.heavyhex_37q import (  # noqa: E402
     ALL_PHYS, validate_backend, embedding_for)
-from heavyhex_circuits.heavyhex_depth7_opt_for_37q import (  # noqa: E402
+from circuits.heavyhex.heavyhex_depth7_opt_for_37q import (  # noqa: E402
     HeavyHex37QDepthOpt, check_values, N_CHECKS)
-from heavyhex_circuits.fetch_coupling import fetch  # noqa: E402
-from heavyhex_circuits.dd_utils import apply_dd, dd_pulse_stats  # noqa: E402
+from circuits.heavyhex.fetch_coupling import fetch  # noqa: E402
+from circuits.heavyhex.dd_utils import apply_dd, dd_pulse_stats  # noqa: E402
 
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     check_matrix_from_dict, syndrome_tensor, logical_label, ALL_NOISE)
@@ -150,13 +150,13 @@ def cmd_submit(args):
     coupling_path = fetch(args.backend, token=keys["ibm_token"],
                           instance=keys["ibm_instance"], outdir=str(RUNS_DIR))
     if args.code == "surface":
-        from rsc_circuits.rsc3 import (
-            RSC3Hardware, ALL_COORDS, embedding_for_surface,
+        from circuits.rotatedSurface.rotatedSurface3 import (
+            RotatedSurface3Hardware, ALL_COORDS, embedding_for_surface,
             validate_backend_surface)
         validate_backend_surface(coupling_path)
-        print(f"backend '{args.backend}': rsc3 17q patch validated "
+        print(f"backend '{args.backend}': rotatedSurface3 17q patch validated "
               f"(45-degree embedding, no SWAPs)")
-        qc = RSC3Hardware(args.cycles).build_circuit()
+        qc = RotatedSurface3Hardware(args.cycles).build_circuit()
         layout = [embedding_for_surface(args.backend)[c]
                   for c in ALL_COORDS]
     else:
@@ -278,12 +278,12 @@ def cmd_analyze(args):
             code = json.load(open(meta_path)).get("code", code)
 
     if code == "surface":
-        from rsc_circuits.rsc3 import (
+        from circuits.rotatedSurface.rotatedSurface3 import (
             check_values as cv_fn, N_CHECKS as n_checks, NUM_DATA as n_data)
-        from dataset_generation.rsc3_stim import (
-            check_matrix_from_dict_rsc3 as mat_fn,
-            syndrome_tensor_rsc3 as tensor_fn,
-            logical_label_rsc3 as logical_fn)
+        from dataset_generation.rotatedSurface3_stim import (
+            check_matrix_from_dict_rotatedSurface3 as mat_fn,
+            syndrome_tensor_rotatedSurface3 as tensor_fn,
+            logical_label_rotatedSurface3 as logical_fn)
     else:
         cv_fn, n_checks, n_data = check_values, N_CHECKS, 17
         mat_fn, tensor_fn, logical_fn = (check_matrix_from_dict,
@@ -398,7 +398,7 @@ def _submit_opts(p):
                    help="ibm_yonsei (default) or ibm_boston")
     p.add_argument("--code", choices=["heavyhex", "surface"],
                    default="heavyhex",
-                   help="code family (surface support lands with the rsc3 "
+                   help="code family (surface support lands with the rotatedSurface3 "
                         "milestone)")
     p.add_argument("--cycles", type=int, default=3)
     p.add_argument("--shots", type=int, default=50_000)

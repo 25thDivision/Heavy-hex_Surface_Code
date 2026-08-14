@@ -81,7 +81,7 @@ def parse_args():
                     default="heavyhex",
                     help="code family; selects dataset/<code>/ and is part "
                          "of the result/checkpoint tag (surface lands with "
-                         "the rsc3 milestone)")
+                         "the rotatedSurface3 milestone)")
     ap.add_argument("-n", "--noise", nargs="+", default=None)
     ap.add_argument("-p", "--rates", nargs="+", type=float, default=None)
     ap.add_argument("-e", "--error-types", nargs="+", default=None)
@@ -151,7 +151,7 @@ def ensure_coupling_json(backend="ibm_yonsei"):
         return
     try:
         import json
-        from heavyhex_circuits.fetch_coupling import fetch
+        from circuits.heavyhex.fetch_coupling import fetch
         keys = json.load(open(keys_path))
         fetch(backend, token=keys.get("ibm_token"),
               instance=keys.get("ibm_instance"), outdir=str(_ROOT))

@@ -88,14 +88,14 @@ GNN 모델 자체는 순수 torch로 구현해 (torch_geometric 등 그래프 �
 - **heavyhex** (기본) — 이 저장소의 원래 (3,3) heavy-hex 코드 (17 data +
   8 dual-use ancilla, QPU는 bridge 포함 37큐빗).
 - **surface** — rotated surface code d=3 (9 data + 8 ancilla = 17큐빗,
-  Z-stab 4 + X-stab 4). 아래 rsc3 섹션 참고.
+  Z-stab 4 + X-stab 4). 아래 rotatedSurface3 섹션 참고.
 
 데이터셋은 `dataset/<code>/<노이즈태그>/...`에 저장되고, 결과/체크포인트
 태그에도 코드 이름이 들어가 (`CNN_heavyhex_...`, `GNN_surface_...`).
 
-#### rotated surface code d=3 (rsc3) 규약
+#### rotated surface code d=3 (rotatedSurface3) 규약
 
-코드 정의는 [rsc_circuits/rsc3.py](rsc_circuits/rsc3.py)에 있어:
+코드 정의는 [circuits/rotatedSurface/rotatedSurface3.py](circuits/rotatedSurface/rotatedSurface3.py)에 있어:
 
 - **격자**: data는 odd-odd 좌표 (x,y)∈{1,3,5}², ancilla 8개는 plaquette
   중심 (짝수 좌표). logical Z = **한 열(x=1)의 data 3개**
@@ -109,19 +109,19 @@ GNN 모델 자체는 순수 torch로 구현해 (torch_geometric 등 그래프 �
   한 번의 fault가 유효 distance를 깎지 않아. 스케줄은 레이어당 data 충돌
   없음이 import 시점에 assert돼.
 - **no-reset ancilla + XOR chain**: 하드웨어 회로는 ancilla를 리셋하지
-  않고 `rsc3.check_values()`(per-ancilla XOR chain)로 check 값을 복원.
-  추상 Stim([dataset_generation/rsc3_stim.py](dataset_generation/rsc3_stim.py))은
+  않고 `rotatedSurface3.check_values()`(per-ancilla XOR chain)로 check 값을 복원.
+  추상 Stim([dataset_generation/rotatedSurface3_stim.py](dataset_generation/rotatedSurface3_stim.py))은
   MR을 쓰며 **check-value 수준 등가성** 규약이 heavyhex와 동일하게 적용돼.
 - **detector 규약** (heavyhex와 동일 구조): Z-check는 cycle 0부터
   (|0⟩_L의 결정론적 0에 앵커), X-check는 cycle≥1 XOR, 마지막에 final-Z
   detector 4개, observable = logical Z. 라벨은 FlipSimulator 측정 flip
   (per-qubit 9비트).
 - **CNN 텐서**: `(2*cycles, 4, 4)` — ancilla 8개를 (d+1)×(d+1)=4×4
-  plaquette-꼭짓점 격자에 임베딩 (`rsc3.ANC_GRID`), 채널은 heavyhex와
+  plaquette-꼭짓점 격자에 임베딩 (`rotatedSurface3.ANC_GRID`), 채널은 heavyhex와
   동일한 [Z-plane, X-plane]×cycle.
 - **GNN**: P1의 detector-node 표현이 그대로 적용돼 (c=3 기준 노드 24개 =
   Z 4×3 + X 4×2 + final-Z 4).
-- **게이트**: `python verification/verify_rsc3.py`가 ALL PASS여야
+- **게이트**: `python verification/verify_rotatedSurface3.py`가 ALL PASS여야
   surface 데이터셋 생성/제출 가능 — Stim 결정론, 무노이즈 Aer 불변량,
   단일 data 에러 서명 일치에 더해 **hook error 검사**(사이클 중간
   ancilla 에러 주입 시 data 전파 서명이 CX 순서 규약의 예측 잔여쌍과
@@ -130,11 +130,11 @@ GNN 모델 자체는 순수 torch로 구현해 (torch_geometric 등 그래프 �
 #### ibm_miami 하드웨어 (surface)
 
 ibm_miami는 **12행×10열 row-major square lattice**(120큐빗, CZ basis)로
-확인됐고, rsc3는 **45도 임베딩**(u=(x+y)/2, v=(y−x)/2 + 오프셋, 5×5
+확인됐고, rotatedSurface3는 **45도 임베딩**(u=(x+y)/2, v=(y−x)/2 + 오프셋, 5×5
 블록)으로 올라가 — 모든 stabilizer CX가 lattice-인접이라 **SWAP이 전혀
 삽입되지 않아** (dry-run 검증: 2Q 게이트 수 = CX 수 그대로 CZ 72개).
-임베딩 오프셋은 `rsc3.EMBED_OFFSETS`, 검증은
-`rsc3.validate_backend_surface`가 담당하고, coupling map이 예상(square
+임베딩 오프셋은 `rotatedSurface3.EMBED_OFFSETS`, 검증은
+`rotatedSurface3.validate_backend_surface`가 담당하고, coupling map이 예상(square
 lattice)과 다르면 에러로 중단돼.
 
 ```bash
@@ -143,7 +143,7 @@ python hardware/run_hw.py submit --backend ibm_miami --code surface   # 실제 �
 python hardware/run_hw.py analyze --job-id <ID>    # code는 job.json에서 자동 인식
 ```
 
-analyze는 job.json의 code를 자동으로 읽어 rsc3용 check-value 복원 /
+analyze는 job.json의 code를 자동으로 읽어 rotatedSurface3용 check-value 복원 /
 4×4 텐서화 / MWPM / 체크포인트({MODEL}_surface_*.pt) 분기를 태워.
 
 **기존 산출물 이관**: 코드 축 도입 전에 만든 로컬 데이터셋은
@@ -213,7 +213,7 @@ python dataset_generation/make_qpu_avg_profile.py --code surface --backend ibm_m
 
 # 2) 코드별 게이트 ALL PASS 필수 -> 데이터셋 -> 학습
 python verification/verify_equivalence.py    # heavyhex ([E] 포함)
-python verification/verify_rsc3.py           # surface ([G] 포함)
+python verification/verify_rotatedSurface3.py           # surface ([G] 포함)
 python dataset_generation/make_dataset.py --code surface -n qpu/<이름> --smoke
 python train.py --model gnn --code surface -n qpu/<이름> -p 0.005 --mwpm
 ```
@@ -221,7 +221,7 @@ python train.py --model gnn --code surface -n qpu/<이름> -p 0.005 --mwpm
 - **추출값**: run별 target.pkl(폴백: properties.json)에서 큐빗별 readout
   error, 1Q error(sx 우선), 물리 엣지별 2Q error를 뽑아 run 간 산술 평균.
   패치 매핑은 코드별로: heavyhex는 `embedding_for(backend)`로 **37q 패치
-  물리 라벨**, surface는 `rsc3.embedding_for_surface(backend)`로 **rsc3
+  물리 라벨**, surface는 `rotatedSurface3.embedding_for_surface(backend)`로 **rotatedSurface3
   로컬 인덱스 0..16**(ALL_COORDS 순서: data 0–8, ancilla 9–16)에 기록.
   run 선택은 job.json의 backend/submitted_at/dry_run/**code**로 판별
   (code 필드가 없는 옛 run은 heavyhex로 간주, dry-run 제외, 백엔드 혼합
@@ -240,7 +240,7 @@ python train.py --model gnn --code surface -n qpu/<이름> -p 0.005 --mwpm
   회로**로 생성돼 — heavyhex는
   [heavyhex37_qpu_stim.py](dataset_generation/heavyhex37_qpu_stim.py)
   (37q, bridge 포함, no-reset, depth-7 fold 미러), surface는
-  [rsc3_qpu_stim.py](dataset_generation/rsc3_qpu_stim.py)(17q, no-reset,
+  [rotatedSurface3_qpu_stim.py](dataset_generation/rotatedSurface3_qpu_stim.py)(17q, no-reset,
   고정 4-레이어 hook-safe CX 스케줄). 게이트/측정마다 해당 물리 큐빗·엣지의
   평균 캘리브레이션 에러가 붙어 (CX→DEPOLARIZE2, H→DEPOLARIZE1(sx 프록시),
   측정 직전→X_ERROR readout). detector는 raw 측정 기록의 XOR 전개로
@@ -285,7 +285,7 @@ LER/MWPM ratio)를 세로로 이어 붙이면 MWPM 기준선 대비 CNN/GNN ×
 **surface(miami)도 `--code surface`로 동일하게 3자 비교가 가능**해 —
 전제는 miami에 non-dry-run 제출 기록이 쌓여 있어서
 `make_qpu_avg_profile.py --code surface`로 프로파일을 만들 수 있어야
-한다는 것 (verify_rsc3 [G] 포함 ALL PASS 후 데이터셋 생성).
+한다는 것 (verify_rotatedSurface3 [G] 포함 ALL PASS 후 데이터셋 생성).
 
 ## 2. 환경 설정
 
@@ -303,7 +303,7 @@ pip install -r requirements.txt
 ```bash
 # 0) 규약 게이트 — "ALL PASS" 확인하고 나서 데이터 생성으로 넘어가기
 python verification/verify_equivalence.py   # heavyhex (+ qpu 프로파일 회로)
-python verification/verify_rsc3.py          # surface (rsc3, hook 검사 포함)
+python verification/verify_rotatedSurface3.py          # surface (rotatedSurface3, hook 검사 포함)
 
 # 1) 데이터셋 생성 (--code 기본값은 heavyhex)
 python dataset_generation/make_dataset.py --smoke   # 빠른 확인용
@@ -417,7 +417,7 @@ cp keys.example.json keys.json     # 그리고 네 거로 적으면 됨
 있어. 일단 `ibm_yonsei` 해보고 결과가 도저히 안 나오면 `ibm_boston`으로 해 볼 것~
 
 백엔드별 37q 패치의 물리 큐빗 임베딩은
-`heavyhex_circuits/heavyhex_37q.py`의 `EMBEDDINGS`에 등록돼 있어
+`circuits/heavyhex/heavyhex_37q.py`의 `EMBEDDINGS`에 등록돼 있어
 (boston/aachen/pittsburgh는 Heron 번호 그대로, yonsei는 Eagle r3 레이아웃
 매핑). `validate_backend`가 임베딩을 자동 선택해서 커플링을 검사하고,
 목록에 없는 백엔드는 매핑을 추가하라는 에러가 나.
@@ -458,26 +458,28 @@ pipeline.sbatch는 flock으로 중복 실행을 차단해 — 파이프라인 jo
 ## 7. 저장소 구조
 
 ```
-heavyhex_circuits/      고정된 회로 자산 (재작성하지 말고 import해서 쓸 것)
-  heavyhex_37q.py                 (3,3) 코드 정의: CHECK_DEFS, DATA_PHYS,
-                                  LOGICAL_Z, check_values, validate_backend,
-                                  EMBEDDINGS (백엔드별 큐빗 임베딩)
-  heavyhex_depth7_opt_for_37q.py  최적화된 depth-7 QPU 회로
-                                  (HeavyHex37QDepthOpt, CYCLE_ORDER)
-  heavyhex_general.py / heavyhex_depth_opt.py / diamond_generator.py
-                                  (3,5)/(5,3) 패치용 생성기; (3,3)은 위의
-                                  두 파일이 더 최적화돼 있으니 그쪽을 쓸 것
-  fetch_coupling.py               백엔드 coupling map 추출 (가장 먼저 실행)
-  dd_utils.py                     dynamical decoupling (기본 XX4)
-rsc_circuits/           rotated surface code d=3 정의 + 하드웨어 회로 +
-                        ibm_miami 45도 임베딩 (rsc3.py)
-dataset_generation/     Stim 회로 생성기(heavyhex33_stim.py, rsc3_stim.py,
-                        heavyhex37_qpu_stim.py, rsc3_qpu_stim.py) +
+circuits/               코드별 고정 회로 자산 (재작성하지 말고 import해서 쓸 것)
+  heavyhex/             (3,3) heavy-hex
+    heavyhex_37q.py                 (3,3) 코드 정의: CHECK_DEFS, DATA_PHYS,
+                                    LOGICAL_Z, check_values, validate_backend,
+                                    EMBEDDINGS (백엔드별 큐빗 임베딩)
+    heavyhex_depth7_opt_for_37q.py  최적화된 depth-7 QPU 회로
+                                    (HeavyHex37QDepthOpt, CYCLE_ORDER)
+    heavyhex_general.py / heavyhex_depth_opt.py / diamond_generator.py
+                                    (3,5)/(5,3) 패치용 생성기; (3,3)은 위의
+                                    두 파일이 더 최적화돼 있으니 그쪽을 쓸 것
+    fetch_coupling.py               백엔드 coupling map 추출 (가장 먼저 실행)
+    dd_utils.py                     dynamical decoupling (기본 XX4)
+  rotatedSurface/       rotated surface code d=3
+    rotatedSurface3.py              코드 정의 + no-reset 하드웨어 회로 +
+                                    ibm_miami 45도 임베딩/검증기
+dataset_generation/     Stim 회로 생성기(heavyhex33_stim.py, rotatedSurface3_stim.py,
+                        heavyhex37_qpu_stim.py, rotatedSurface3_qpu_stim.py) +
                         데이터셋 생성(make_dataset.py, --code 축) +
                         QPU 프로파일 생성기(make_qpu_avg_profile.py,
                         --code 축)
 verification/           규약 게이트 스크립트 (§4) — verify_equivalence.py
-                        (heavyhex + qpu 회로), verify_rsc3.py (surface)
+                        (heavyhex + qpu 회로), verify_rotatedSurface3.py (surface)
 model/                  채워야 할 파일 (cnn_skeleton.py, gnn_skeleton.py) +
                         모델 레지스트리(__init__.py) + 데이터 로더(data.py) +
                         GNN 그래프 인프라(graph.py)
@@ -498,7 +500,7 @@ QPU 회로 흐름 (원본 저장소 README에서): `fetch_coupling` →
 surface code 회로 생성 → `transpile` → DD — `hardware/run_hw.py`가 정확히
 이 순서로 되어 있어.
 
-참고: `heavyhex_circuits/` 안의 회로 테스트 중 coupling map을 쓰는 것들
+참고: `circuits/heavyhex/` 안의 회로 테스트 중 coupling map을 쓰는 것들
 (test_general.py, heavyhex_depth_opt.py 데모)은 fetch_coupling.py로
 coupling JSON을 먼저 생성한 뒤 실행해야 해 (test_37q.py /
 test_depth7_opt_for_37q.py는 Aer만 쓰므로 바로 실행 가능).

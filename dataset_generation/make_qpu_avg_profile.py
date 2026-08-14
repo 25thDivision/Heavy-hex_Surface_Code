@@ -29,10 +29,10 @@ Values are arithmetically averaged across runs (per quantity, over the
 runs where it is present), then mapped from device qubits to patch
 labels:
   * heavyhex: 37q patch physical labels (heavyhex_37q.embedding_for)
-  * surface : rsc3 patch LOCAL indices 0..16 in rsc_circuits.rsc3
+  * surface : rotatedSurface3 patch LOCAL indices 0..16 in circuits.rotatedSurface.rotatedSurface3
               ALL_COORDS order (data 0-8, ancillas 9-16 in CYCLE_ORDER),
-              device qubits via rsc3.embedding_for_surface; edges from
-              rsc3.required_edges_surface()
+              device qubits via rotatedSurface3.embedding_for_surface; edges from
+              rotatedSurface3.required_edges_surface()
 
 Run selection: job.json's backend / submitted_at / dry_run / code decide
 membership — dry-runs are excluded, runs of another code are excluded
@@ -43,7 +43,7 @@ submitted_at, per-run source, code, generation time) but NO local
 absolute paths.
 
 Consumers: heavyhex profiles -> heavyhex37_qpu_stim (37q circuit),
-surface profiles -> rsc3_qpu_stim (17q circuit). Plain 4-parameter
+surface profiles -> rotatedSurface3_qpu_stim (17q circuit). Plain 4-parameter
 profiles keep using the abstract generators. Profiles with a "mode" key
 are excluded from the default training grid (ALL_NOISE) — select them
 explicitly with -n qpu/<name>.
@@ -65,7 +65,7 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
-from heavyhex_circuits.heavyhex_37q import (  # noqa: E402
+from circuits.heavyhex.heavyhex_37q import (  # noqa: E402
     ALL_PHYS, embedding_for, required_edges)
 
 
@@ -210,11 +210,11 @@ def average_profiles(per_run):
 def _patch_layout(code, backend):
     """(patch labels, patch edges, label -> device qubit) of a code.
 
-    heavyhex labels = 37q physical labels; surface labels = rsc3 LOCAL
+    heavyhex labels = 37q physical labels; surface labels = rotatedSurface3 LOCAL
     indices (ALL_COORDS order — the module's existing constant, no new
     labeling scheme)."""
     if code == "surface":
-        from rsc_circuits.rsc3 import (
+        from circuits.rotatedSurface.rotatedSurface3 import (
             ALL_COORDS, L, embedding_for_surface, required_edges_surface)
         emb_c = embedding_for_surface(backend)
         labels = [L[c] for c in ALL_COORDS]           # 0..16
@@ -341,7 +341,7 @@ def main():
         f.write("\n")
     print(f"registered -> {args.profiles}")
     gate = ("verification/verify_equivalence.py" if args.code == "heavyhex"
-            else "verification/verify_rsc3.py")
+            else "verification/verify_rotatedSurface3.py")
     print(f"next: python dataset_generation/make_dataset.py --code "
           f"{args.code} -n {name} --smoke   (gate: {gate} ALL PASS first)")
 

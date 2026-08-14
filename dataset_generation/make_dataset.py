@@ -68,7 +68,7 @@ def parse_args():
     ap.add_argument("--code", choices=["heavyhex", "surface"],
                     default="heavyhex",
                     help="code family; selects the dataset/<code>/ subtree "
-                         "(surface generation lands with the rsc3 milestone)")
+                         "(surface generation lands with the rotatedSurface3 milestone)")
     ap.add_argument("--cycles", type=int, default=3,
                     help="number of QEC cycles (default 3, same as HW run)")
     ap.add_argument("--train-samples", type=int, default=TRAIN_SAMPLES)
@@ -137,21 +137,21 @@ def code_generator(code, noise, cycles, et, p):
                 f"noise profile '{noise}' is a '{prof_code}' calibration "
                 f"profile — it cannot generate --code {code} datasets")
     if code == "surface":
-        from dataset_generation.rsc3_stim import (
-            build_rsc3_stim_circuit, sample_flips_rsc3,
-            syndrome_tensor_rsc3, logical_label_rsc3)
-        from rsc_circuits.rsc3 import GRID_SHAPE, NUM_DATA
+        from dataset_generation.rotatedSurface3_stim import (
+            build_rotatedSurface3_stim_circuit, sample_flips_rotatedSurface3,
+            syndrome_tensor_rotatedSurface3, logical_label_rotatedSurface3)
+        from circuits.rotatedSurface.rotatedSurface3 import GRID_SHAPE, NUM_DATA
         if is_qpu_profile(noise):
             # calibration-averaged profile -> hardware-shaped 17q circuit
-            from dataset_generation.rsc3_qpu_stim import (
-                build_rsc3_qpu_stim_circuit, sample_rsc3_qpu_flips)
-            return (build_rsc3_qpu_stim_circuit(cycles, et, p,
+            from dataset_generation.rotatedSurface3_qpu_stim import (
+                build_rotatedSurface3_qpu_stim_circuit, sample_rotatedSurface3_qpu_flips)
+            return (build_rotatedSurface3_qpu_stim_circuit(cycles, et, p,
                                                 NOISE_PROFILES[noise]),
-                    sample_rsc3_qpu_flips, syndrome_tensor_rsc3,
-                    logical_label_rsc3, GRID_SHAPE, NUM_DATA)
-        return (build_rsc3_stim_circuit(cycles, et, p, noise),
-                sample_flips_rsc3, syndrome_tensor_rsc3,
-                logical_label_rsc3, GRID_SHAPE, NUM_DATA)
+                    sample_rotatedSurface3_qpu_flips, syndrome_tensor_rotatedSurface3,
+                    logical_label_rotatedSurface3, GRID_SHAPE, NUM_DATA)
+        return (build_rotatedSurface3_stim_circuit(cycles, et, p, noise),
+                sample_flips_rotatedSurface3, syndrome_tensor_rotatedSurface3,
+                logical_label_rotatedSurface3, GRID_SHAPE, NUM_DATA)
     if is_qpu_profile(noise):
         # calibration-averaged profile -> hardware-shaped 37q circuit
         from dataset_generation.heavyhex37_qpu_stim import (

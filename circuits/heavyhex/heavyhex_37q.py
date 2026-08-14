@@ -210,7 +210,7 @@ def embedding_for(backend_name):
             f"no 37q-patch embedding registered for backend "
             f"'{backend_name}'. Known backends: {sorted(EMBEDDINGS)}. "
             f"To add one, put a patch-label -> device-qubit dict into "
-            f"EMBEDDINGS in heavyhex_circuits/heavyhex_37q.py (identity "
+            f"EMBEDDINGS in circuits/heavyhex/heavyhex_37q.py (identity "
             f"if the device uses the Heron q25-q107 numbering) and check "
             f"it with validate_backend on the device's coupling JSON.")
 

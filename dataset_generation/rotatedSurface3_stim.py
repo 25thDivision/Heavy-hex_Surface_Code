@@ -4,17 +4,17 @@ Rotated surface code d=3 — abstract Stim circuit generator
 ==========================================================
 Same conventions as the heavy-hex generator (heavyhex33_stim.py):
 
-  * per-cycle measurement order = rsc_circuits.rsc3.CYCLE_ORDER
+  * per-cycle measurement order = circuits.rotatedSurface.rotatedSurface3.CYCLE_ORDER
     (8 checks; syn bit index = cycle*8 + j) — identical to the hardware
     circuit's clbit layout
   * Stim treats every ancilla with MR; the hardware never resets, and
-    rsc3.check_values() (per-ancilla XOR chain) recovers the check
+    rotatedSurface3.check_values() (per-ancilla XOR chain) recovers the check
     values — the two streams agree at the CHECK-VALUE level (same
     contract as heavy-hex, README §4)
   * CX schedule inside a cycle = the SAME fixed hook-safe 4-layer order
-    as the hardware circuit (rsc3.Z_CORNER_ORDER / X_CORNER_ORDER), so
+    as the hardware circuit (rotatedSurface3.Z_CORNER_ORDER / X_CORNER_ORDER), so
     hook-error propagation is identical between Stim and Aer
-    (verification/verify_rsc3.py checks this)
+    (verification/verify_rotatedSurface3.py checks this)
   * detectors: Z-checks from cycle 0 (anchored on the deterministic 0 of
     |0>_L), X-checks from cycle 1 (temporal XOR), then 4 final-Z
     detectors (final-data support parity ^ last Z-check value);
@@ -26,7 +26,7 @@ Same conventions as the heavy-hex generator (heavyhex33_stim.py):
     reset_flip / gate_depol) applied at the same circuit positions
 
 Tensor: (shots, 2*num_cycles, 4, 4) — the 8 ancillas on the 4x4
-plaquette-vertex grid (rsc3.ANC_GRID), channels [Z-plane, X-plane] per
+plaquette-vertex grid (rotatedSurface3.ANC_GRID), channels [Z-plane, X-plane] per
 cycle exactly like the heavy-hex diamond tensor.
 """
 import sys
@@ -39,7 +39,7 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from rsc_circuits.rsc3 import (  # noqa: E402
+from circuits.rotatedSurface.rotatedSurface3 import (  # noqa: E402
     DATA_COORDS, DIDX, NUM_DATA, N_CHECKS, N_LAYERS, CYCLE_ORDER,
     CHECK_DEFS, Z_NAMES, X_NAMES, Z_POS, ANC_GRID, GRID_SHAPE,
     LOGICAL_Z_IDX, DISTANCE, check_values)
@@ -56,15 +56,15 @@ def num_detectors(num_cycles):
     return 4 * num_cycles + 4 * (num_cycles - 1) + 4
 
 
-def build_rsc3_stim_circuit(num_cycles=3, noise_type="X", p=0.0,
+def build_rotatedSurface3_stim_circuit(num_cycles=3, noise_type="X", p=0.0,
                             noise_profile="ideal/dp0_mf0_rf0_gd0",
                             inject=None, inject_ops=()):
-    """Abstract rsc3 Stim circuit. Only the initial state |0>_L.
+    """Abstract rotatedSurface3 Stim circuit. Only the initial state |0>_L.
 
     Args mirror heavyhex33_stim.build_stim_circuit; additionally
     inject_ops = list of (pauli, ("data", coord)|("anc", name), cycle,
     after_layer) for hook-error verification (same meaning as
-    rsc3.RSC3Hardware.build_circuit)."""
+    rotatedSurface3.RotatedSurface3Hardware.build_circuit)."""
     if is_qpu_profile(noise_profile):
         raise ValueError("qpu_avg profiles are heavy-hex only for now")
     prof = (NOISE_PROFILES[noise_profile] if isinstance(noise_profile, str)
@@ -157,22 +157,22 @@ def _append_detectors(c, num_cycles):
 # ==================================================================
 # sampling / tensor / detector utilities (mirror heavyhex33_stim)
 # ==================================================================
-def split_rsc3_sample(raw, num_cycles):
+def split_rotatedSurface3_sample(raw, num_cycles):
     raw = np.asarray(raw, dtype=np.uint8)
     return raw[:, :N_CHECKS * num_cycles], raw[:, N_CHECKS * num_cycles:]
 
 
-def sample_flips_rsc3(circuit, shots, num_cycles, seed=None):
+def sample_flips_rotatedSurface3(circuit, shots, num_cycles, seed=None):
     """FlipSimulator measurement flips -> (syn check-value flips, data
     flips). Stim uses MR, so syn flips ARE check-value flips."""
     fs = stim.FlipSimulator(batch_size=shots, seed=seed,
                             disable_stabilizer_randomization=True)
     fs.do(circuit)
     mf = fs.get_measurement_flips().T.astype(np.uint8)
-    return split_rsc3_sample(mf, num_cycles)
+    return split_rotatedSurface3_sample(mf, num_cycles)
 
 
-def syndrome_tensor_rsc3(check_mat, num_cycles):
+def syndrome_tensor_rotatedSurface3(check_mat, num_cycles):
     """(shots, 8C) check values -> (shots, 2C, 4, 4) tensor, channels
     [Z-plane (value), X-plane (cycle-to-cycle XOR; c=0 stays 0)]."""
     shots = check_mat.shape[0]
@@ -189,7 +189,7 @@ def syndrome_tensor_rsc3(check_mat, num_cycles):
     return t
 
 
-def check_matrix_from_dict_rsc3(vals, num_cycles):
+def check_matrix_from_dict_rotatedSurface3(vals, num_cycles):
     n = vals[CYCLE_ORDER[0]].shape[0]
     mat = np.zeros((n, N_CHECKS * num_cycles), dtype=np.uint8)
     for j, name in enumerate(CYCLE_ORDER):
@@ -198,7 +198,7 @@ def check_matrix_from_dict_rsc3(vals, num_cycles):
     return mat
 
 
-def detectors_from_dataset_rsc3(check_mat, y_qubit, num_cycles):
+def detectors_from_dataset_rotatedSurface3(check_mat, y_qubit, num_cycles):
     """(check values, final 9 bits) -> detector vectors in
     _append_detectors order (hardware/MWPM path)."""
     shots = check_mat.shape[0]
@@ -224,7 +224,7 @@ def detectors_from_dataset_rsc3(check_mat, y_qubit, num_cycles):
     return det
 
 
-def detectors_from_tensor_rsc3(tensor, y_qubit):
+def detectors_from_tensor_rotatedSurface3(tensor, y_qubit):
     """Saved dataset (features, labels) -> detector vectors (MWPM path)."""
     tensor = np.asarray(tensor, dtype=np.uint8)
     y_qubit = np.asarray(y_qubit, dtype=np.uint8)
@@ -255,7 +255,7 @@ def detectors_from_tensor_rsc3(tensor, y_qubit):
     return det
 
 
-def logical_label_rsc3(y_qubit):
+def logical_label_rotatedSurface3(y_qubit):
     """Final data 9 bits -> logical Z flip (column x=1 parity)."""
     lab = np.zeros(y_qubit.shape[0], dtype=np.uint8)
     for i in LOGICAL_Z_IDX:
@@ -264,13 +264,13 @@ def logical_label_rsc3(y_qubit):
 
 
 if __name__ == "__main__":
-    c = build_rsc3_stim_circuit(3, "X", 0.01,
+    c = build_rotatedSurface3_stim_circuit(3, "X", 0.01,
                                 "realistic/dp0.001_mf0.01_rf0.01_gd0.008")
     print(f"cycles=3 qubits={c.num_qubits} meas={c.num_measurements} "
           f"detectors={c.num_detectors} (expected {num_detectors(3)})")
     dem = c.detector_error_model(decompose_errors=True)
     print(f"DEM instructions: {len(dem)}")
-    c0 = build_rsc3_stim_circuit(3)
+    c0 = build_rotatedSurface3_stim_circuit(3)
     det = c0.compile_detector_sampler().sample(shots=256,
                                                append_observables=True)
     print(f"noiseless detectors all-zero: {np.asarray(det).sum() == 0}")

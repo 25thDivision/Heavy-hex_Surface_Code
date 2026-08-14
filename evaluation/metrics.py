@@ -35,7 +35,7 @@ import numpy as np
 _ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_ROOT))
 
-from heavyhex_circuits.heavyhex_37q import DATA_PHYS, LOGICAL_Z  # noqa: E402
+from circuits.heavyhex.heavyhex_37q import DATA_PHYS, LOGICAL_Z  # noqa: E402
 
 # LOGICAL_Z physical labels -> indices into the 17-bit DATA_PHYS-ordered
 # per-qubit vector (derived, never hardcoded)
@@ -48,7 +48,7 @@ def logical_qubit_indices(code="heavyhex"):
     if code == "heavyhex":
         return LOGICAL_Z_DATA_IDX
     if code == "surface":
-        from rsc_circuits.rsc3 import LOGICAL_Z_IDX
+        from circuits.rotatedSurface.rotatedSurface3 import LOGICAL_Z_IDX
         return LOGICAL_Z_IDX
     raise ValueError(f"unknown code '{code}'")
 

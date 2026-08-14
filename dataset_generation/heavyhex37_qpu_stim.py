@@ -46,10 +46,10 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from heavyhex_circuits.heavyhex_37q import (  # noqa: E402
+from circuits.heavyhex.heavyhex_37q import (  # noqa: E402
     DATA_PHYS, ANC_PHYS, ALL_PHYS, L, br, CHECK_DEFS, Z_STABS,
     LOGICAL_Z, check_values)
-from heavyhex_circuits.heavyhex_depth7_opt_for_37q import (  # noqa: E402
+from circuits.heavyhex.heavyhex_depth7_opt_for_37q import (  # noqa: E402
     RUNG, ROUND1, ROUND2, CYCLE_ORDER, N_CHECKS, FOLDS, ANC_OF)
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     CHECK_AT, Z_POS, DIDX, num_detectors, split_stim_sample,

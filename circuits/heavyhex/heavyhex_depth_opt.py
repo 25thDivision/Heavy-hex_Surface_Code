@@ -21,7 +21,7 @@ arms within one round; no duplicated targets).
 import numpy as np
 from itertools import product
 from qiskit import QuantumCircuit, QuantumRegister, ClassicalRegister
-from heavyhex_circuits.heavyhex_general import GeneralDiamondCircuit
+from circuits.heavyhex.heavyhex_general import GeneralDiamondCircuit
 
 
 class DepthOptDiamond(GeneralDiamondCircuit):

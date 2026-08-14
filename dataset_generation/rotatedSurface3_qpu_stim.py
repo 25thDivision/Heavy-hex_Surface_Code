@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
-Hardware-shaped rsc3 (d=3 rotated surface) Stim circuit with
+Hardware-shaped rotatedSurface3 (d=3 rotated surface) Stim circuit with
 QPU-averaged calibration noise
 ============================================================
-The rsc3 counterpart of heavyhex37_qpu_stim.py. Mirrors
-rsc_circuits.rsc3.RSC3Hardware gate-for-gate on the 17 patch qubits
+The rotatedSurface3 counterpart of heavyhex37_qpu_stim.py. Mirrors
+circuits.rotatedSurface.rotatedSurface3.RotatedSurface3Hardware gate-for-gate on the 17 patch qubits
 (9 data + 8 ancillas, local indices in ALL_COORDS order): the same fixed
 hook-safe 4-layer CX schedule (Z_CORNER_ORDER / X_CORNER_ORDER) and NO
 ancilla reset — raw ancilla bits accumulate exactly like on hardware and
 check values are recovered by the per-ancilla XOR chain
-(rsc3.check_values).
+(rotatedSurface3.check_values).
 
 Noise attachment (profile mode "qpu_avg_v1" with code "surface", built
 by make_qpu_avg_profile.py --code surface; every rate is the
 run-averaged calibration value of THAT patch qubit / edge, keyed by the
-rsc3 LOCAL index 0..16 — data 0-8, ancillas 9-16 in CYCLE_ORDER — and
+rotatedSurface3 LOCAL index 0..16 — data 0-8, ancillas 9-16 in CYCLE_ORDER — and
 "i-j" for edges):
   * each CX               -> DEPOLARIZE2(edge 2Q error) on its qubits
   * each H                -> DEPOLARIZE1(qubit 1Q error, sx proxy)
@@ -35,12 +35,12 @@ NOT modeled (documented limitation, also in README_revised.md):
 
 Detectors are defined on the RAW measurement record via XOR expansion of
 the per-ancilla chains (raw_j ^ raw_{j-1} = check value), in EXACTLY the
-detector order of rsc3_stim._append_detectors — so the tensor / MWPM
+detector order of rotatedSurface3_stim._append_detectors — so the tensor / MWPM
 reconstruction logic is unchanged and the DEM can feed PyMatching.
 
-verification/verify_rsc3.py section [G] enforces detector determinism,
+verification/verify_rotatedSurface3.py section [G] enforces detector determinism,
 single-error signature agreement vs Aer, and check-value-level
-equivalence with the abstract rsc3 Stim circuit; qpu/* surface dataset
+equivalence with the abstract rotatedSurface3 Stim circuit; qpu/* surface dataset
 generation must NOT proceed before ALL PASS (incl. [G]).
 """
 import sys
@@ -53,12 +53,12 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from rsc_circuits.rsc3 import (  # noqa: E402
+from circuits.rotatedSurface.rotatedSurface3 import (  # noqa: E402
     ALL_COORDS, DATA_COORDS, DIDX, NUM_DATA, N_CHECKS, N_LAYERS, L,
     CYCLE_ORDER, CHECK_DEFS, X_NAMES, Z_NAMES, Z_POS, LOGICAL_Z_IDX,
     check_values)
-from dataset_generation.rsc3_stim import (  # noqa: E402
-    AIDX, num_detectors, split_rsc3_sample, check_matrix_from_dict_rsc3)
+from dataset_generation.rotatedSurface3_stim import (  # noqa: E402
+    AIDX, num_detectors, split_rotatedSurface3_sample, check_matrix_from_dict_rotatedSurface3)
 
 _ZERO = {"readout": {}, "error_1q": {}, "error_2q": {}}
 
@@ -69,7 +69,7 @@ def _rates(profile):
     prof = profile or _ZERO
     if profile is not None and prof.get("code", "heavyhex") != "surface":
         raise ValueError(
-            "rsc3_qpu_stim needs a --code surface qpu_avg profile "
+            "rotatedSurface3_qpu_stim needs a --code surface qpu_avg profile "
             f"(got code '{prof.get('code', 'heavyhex')}')")
     ro = {int(k): v for k, v in prof.get("readout", {}).items()}
     e1 = {int(k): v for k, v in prof.get("error_1q", {}).items()}
@@ -112,16 +112,16 @@ class _Builder:
         return self.n_meas - 1
 
 
-def build_rsc3_qpu_stim_circuit(num_cycles=3, noise_type="X", p=0.0,
+def build_rotatedSurface3_qpu_stim_circuit(num_cycles=3, noise_type="X", p=0.0,
                                 profile=None, inject=None):
-    """Hardware-shaped rsc3 Stim circuit (initial state |0>_L only).
+    """Hardware-shaped rotatedSurface3 Stim circuit (initial state |0>_L only).
 
     Args mirror heavyhex37_qpu_stim.build_qpu_stim_circuit:
         profile: surface qpu_avg_v1 profile dict (None -> noiseless,
                  used by the verification gate)
         inject:  (pauli, data_coord, after_cycle) — deterministic single
                  error for verification (same meaning as
-                 rsc3.RSC3Hardware.build_circuit)
+                 rotatedSurface3.RotatedSurface3Hardware.build_circuit)
     """
     b = _Builder(profile)
     b.c.append("R", list(range(len(ALL_COORDS))))
@@ -159,7 +159,7 @@ def build_rsc3_qpu_stim_circuit(num_cycles=3, noise_type="X", p=0.0,
         fin[c] = b.measure(L[c])
 
     # ---- detectors: XOR expansion of the raw record, in the exact
-    # ---- order of rsc3_stim._append_detectors -------------------------
+    # ---- order of rotatedSurface3_stim._append_detectors -------------------------
     M = b.n_meas
     assert M == N_CHECKS * num_cycles + NUM_DATA
     rec = lambda k: stim.target_rec(k - M)  # noqa: E731
@@ -188,26 +188,26 @@ def build_rsc3_qpu_stim_circuit(num_cycles=3, noise_type="X", p=0.0,
     return b.c
 
 
-def sample_rsc3_qpu_flips(circuit, shots, num_cycles, seed=None):
+def sample_rotatedSurface3_qpu_flips(circuit, shots, num_cycles, seed=None):
     """FlipSimulator flips of the RAW record -> (check-value flip matrix
     (shots, 8C), final-data flips (shots, 9)).
 
     The raw syn flips pass through the same per-ancilla XOR chain as
-    hardware raw bits (rsc3.check_values), which is linear, so the
+    hardware raw bits (rotatedSurface3.check_values), which is linear, so the
     result is the flip of each CHECK VALUE — directly comparable to the
-    abstract circuit's MR bits and consumable by syndrome_tensor_rsc3 /
+    abstract circuit's MR bits and consumable by syndrome_tensor_rotatedSurface3 /
     the detector reconstructions."""
     fs = stim.FlipSimulator(batch_size=shots, seed=seed,
                             disable_stabilizer_randomization=True)
     fs.do(circuit)
     mf = fs.get_measurement_flips().T.astype(np.uint8)
-    raw_syn, dat = split_rsc3_sample(mf, num_cycles)
+    raw_syn, dat = split_rotatedSurface3_sample(mf, num_cycles)
     vals = check_values(raw_syn, num_cycles)
-    return check_matrix_from_dict_rsc3(vals, num_cycles), dat
+    return check_matrix_from_dict_rotatedSurface3(vals, num_cycles), dat
 
 
 if __name__ == "__main__":
-    c = build_rsc3_qpu_stim_circuit(3)
+    c = build_rotatedSurface3_qpu_stim_circuit(3)
     print(f"noiseless: qubits={c.num_qubits} meas={c.num_measurements} "
           f"detectors={c.num_detectors} (expected {num_detectors(3)})")
     det = c.compile_detector_sampler().sample(shots=256,

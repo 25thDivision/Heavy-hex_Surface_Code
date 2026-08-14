@@ -58,9 +58,9 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from heavyhex_circuits.heavyhex_37q import (  # noqa: E402
+from circuits.heavyhex.heavyhex_37q import (  # noqa: E402
     DATA_PHYS, ANC_PHYS, CHECK_DEFS, Z_STABS, X_STABS, LOGICAL_Z, LOGICAL_X)
-from heavyhex_circuits.heavyhex_depth7_opt_for_37q import (  # noqa: E402
+from circuits.heavyhex.heavyhex_depth7_opt_for_37q import (  # noqa: E402
     CYCLE_ORDER, N_CHECKS, RUNG)
 
 # ------------------------------------------------------------------

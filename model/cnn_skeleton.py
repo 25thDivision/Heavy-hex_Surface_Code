@@ -11,7 +11,7 @@ Input : (B, 2*num_cycles, H, W) uint8 syndrome tensor
         - heavyhex: 4x5 diamond embedding of the 8 ancillas
           (dataset_generation/heavyhex33_stim.py, ANC_COORD)
         - surface (--code surface): 4x4 plaquette-vertex grid
-          (rsc_circuits/rsc3.py, ANC_GRID); the constructor's `code`
+          (circuits/rotatedSurface/rotatedSurface3.py, ANC_GRID); the constructor's `code`
           argument selects the grid via model.CODE_SPECS
         - channels alternate [Z-plane, X-plane] per cycle
           (default num_cycles=3 -> in_channels=6)

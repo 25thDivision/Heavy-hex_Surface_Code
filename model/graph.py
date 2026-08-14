@@ -62,7 +62,7 @@ def code_adapter(code):
     if code == "heavyhex":
         from dataset_generation.heavyhex33_stim import (
             CHECK_AT, Z_POS, ANC_COORD, DIDX, GRID_SHAPE, num_detectors)
-        from heavyhex_circuits.heavyhex_37q import CHECK_DEFS, Z_STABS
+        from circuits.heavyhex.heavyhex_37q import CHECK_DEFS, Z_STABS
         return dict(
             check_at=list(CHECK_AT), z_names=set(Z_STABS),
             z_pos=list(Z_POS),
@@ -71,8 +71,8 @@ def code_adapter(code):
             coord={n: ANC_COORD[CHECK_DEFS[n][2]] for n in CHECK_AT},
             grid=GRID_SHAPE, num_detectors=num_detectors)
     if code == "surface":
-        from dataset_generation.rsc3_stim import num_detectors
-        from rsc_circuits.rsc3 import (
+        from dataset_generation.rotatedSurface3_stim import num_detectors
+        from circuits.rotatedSurface.rotatedSurface3 import (
             CYCLE_ORDER, Z_NAMES, Z_POS, CHECK_DEFS, ANC_GRID, DIDX,
             GRID_SHAPE)
         return dict(

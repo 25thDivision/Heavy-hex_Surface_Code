@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Rotated surface code d=3 (rsc3) — code definition + hardware circuit
+Rotated surface code d=3 (rotatedSurface3) — code definition + hardware circuit
 ====================================================================
 9 data + 8 ancilla = 17 qubits, 4 Z-stabilizers + 4 X-stabilizers,
 memory-Z protocol (initial |0..0>, final Z-basis data readout).
@@ -31,12 +31,12 @@ CX order inside a cycle (hook-error-safe standard order, FIXED constants):
   distance. Dually, a Z error on a Z-ancilla after layer 2 leaves a
   HORIZONTAL Z pair (same y), benign for logical Z. The schedule is also
   conflict-free: no data qubit is touched twice in one layer.
-  verification/verify_rsc3.py checks the propagation empirically.
+  verification/verify_rotatedSurface3.py checks the propagation empirically.
 
 Ancillas are NEVER reset (hardware): raw bit = XOR accumulation with the
 same ancilla's previous measurement; check_values() (per-ancilla XOR
 chain) recovers the check values. The abstract Stim circuit
-(dataset_generation/rsc3_stim.py) uses MR — the two streams agree at the
+(dataset_generation/rotatedSurface3_stim.py) uses MR — the two streams agree at the
 check-value level, the same contract as heavy-hex (README §4).
 
 ibm_miami embedding (45-degree rotation): verified 12x10 row-major
@@ -123,7 +123,7 @@ for _l in range(N_LAYERS):
 
 def check_values(syn_rows, num_cycles):
     """No-reset raw bits -> per-cycle check values via per-ancilla XOR
-    chains (each rsc3 ancilla measures the same check every cycle)."""
+    chains (each rotatedSurface3 ancilla measures the same check every cycle)."""
     syn_rows = np.asarray(syn_rows)
     n = syn_rows.shape[0]
     vals = {name: np.zeros((n, num_cycles), dtype=int)
@@ -140,7 +140,7 @@ def check_values(syn_rows, num_cycles):
 # ==================================================================
 # hardware circuit (Qiskit) — no-reset ancillas, memory-Z
 # ==================================================================
-class RSC3Hardware:
+class RotatedSurface3Hardware:
     """d=3 rotated surface code circuit on 17 qubits (local indices;
     the ibm_miami embedding only enters at transpile initial_layout).
 
@@ -212,9 +212,9 @@ def embedding_for_surface(backend_name):
         r0, c0 = EMBED_OFFSETS[backend_name]
     except KeyError:
         raise RuntimeError(
-            f"no rsc3 embedding registered for backend '{backend_name}'. "
+            f"no rotatedSurface3 embedding registered for backend '{backend_name}'. "
             f"Known: {sorted(EMBED_OFFSETS)}. Add a 5x5-block offset to "
-            f"EMBED_OFFSETS in rsc_circuits/rsc3.py after checking the "
+            f"EMBED_OFFSETS in circuits/rotatedSurface/rotatedSurface3.py after checking the "
             f"device is a row-major square lattice "
             f"(validate_backend_surface).")
     emb = {}
@@ -236,7 +236,7 @@ def required_edges_surface():
 
 
 def validate_backend_surface(coupling_json_path, raise_on_fail=True):
-    """Verify the rsc3 patch fits the backend under its embedding.
+    """Verify the rotatedSurface3 patch fits the backend under its embedding.
 
     Also re-checks the square-lattice assumption on the patch block: if
     the device is NOT the expected row-major square lattice, this fails —
@@ -252,14 +252,14 @@ def validate_backend_surface(coupling_json_path, raise_on_fail=True):
     if missing and raise_on_fail:
         raise RuntimeError(
             f"backend '{cm.get('name', '?')}' lacks {len(missing)} device "
-            f"edges required by the rsc3 45-degree embedding (coupling "
+            f"edges required by the rotatedSurface3 45-degree embedding (coupling "
             f"map differs from the expected square lattice — report to "
             f"the user): {missing}")
     return missing
 
 
 if __name__ == '__main__':
-    qc = RSC3Hardware(2).build_circuit()
+    qc = RotatedSurface3Hardware(2).build_circuit()
     ops = qc.count_ops()
     print(f"2-cycle: depth={qc.depth()} cx={ops.get('cx')} h={ops.get('h')} "
           f"meas={ops.get('measure')} reset={ops.get('reset', 0)}")

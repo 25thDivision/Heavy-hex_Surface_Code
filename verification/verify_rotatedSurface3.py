@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Contract gate for the rotated surface code d=3 (rsc3, --code surface)
+Contract gate for the rotated surface code d=3 (rotatedSurface3, --code surface)
 =====================================================================
 Dataset generation / hardware submission for --code surface must NOT
 proceed until this script prints ALL PASS.
@@ -10,7 +10,7 @@ proceed until this script prints ALL PASS.
       cycle-to-cycle XORs are 0, final data Z-support parity == last
       Z-check value, logical Z parity is 0
   [C] The hardware circuit (noiseless Aer, no-reset ancillas) satisfies
-      the same invariants through rsc3.check_values(), with the same bit
+      the same invariants through rotatedSurface3.check_values(), with the same bit
       layout (cyc*8 + j, CYCLE_ORDER)
   [D] For injected single DATA errors, the set of checks firing at
       cycle 1 is identical between Stim and Aer and equals the stabilizer
@@ -18,7 +18,7 @@ proceed until this script prints ALL PASS.
   [E] HOOK errors: an ancilla error injected in the middle of a cycle
       (right after CX layer 2 of 4) must propagate to the data qubits of
       the REMAINING layers exactly as the fixed CX corner orders predict
-      (rsc3.Z_CORNER_ORDER / X_CORNER_ORDER):
+      (rotatedSurface3.Z_CORNER_ORDER / X_CORNER_ORDER):
         * statically: the residual pair of a bulk X-check is VERTICAL
           (same x) and of a bulk Z-check HORIZONTAL (same y) — the
           hook-safety property for memory-Z
@@ -30,14 +30,14 @@ proceed until this script prints ALL PASS.
       coupling_ibm_miami.json exists at the repo root, the registered
       45-degree embedding must fit it (every stabilizer CX
       device-adjacent). Skipped when the file is absent (offline).
-  [G] Hardware-shaped rsc3 Stim circuit (rsc3_qpu_stim, the surface
+  [G] Hardware-shaped rotatedSurface3 Stim circuit (rotatedSurface3_qpu_stim, the surface
       QPU calibration-profile generator; no-reset ancillas):
       (a) with zero noise, every detector is deterministic
       (b) injected single errors fire the same checks as Aer
-          (RSC3Hardware; raw values through the per-ancilla XOR chain)
+          (RotatedSurface3Hardware; raw values through the per-ancilla XOR chain)
       (c) the deterministic detector stream (incl. final-Z detectors)
           reconstructed from raw values is bit-identical to the abstract
-          rsc3 Stim circuit's AND actually fires (no vacuous pass)
+          rotatedSurface3 Stim circuit's AND actually fires (no vacuous pass)
       Dataset generation from qpu/* surface profiles must NOT proceed
       until this section passes together with the rest (ALL PASS).
 """
@@ -51,15 +51,15 @@ sys.path.insert(0, str(_ROOT))
 
 from qiskit_aer import AerSimulator  # noqa: E402
 
-from rsc_circuits.rsc3 import (  # noqa: E402
-    RSC3Hardware, check_values, validate_backend_surface,
+from circuits.rotatedSurface.rotatedSurface3 import (  # noqa: E402
+    RotatedSurface3Hardware, check_values, validate_backend_surface,
     CYCLE_ORDER, CHECK_DEFS, Z_NAMES, X_NAMES, Z_STABS, X_STABS,
     DATA_COORDS, DIDX, LOGICAL_Z_IDX, N_CHECKS, NUM_DATA)
-from dataset_generation.rsc3_stim import (  # noqa: E402
-    build_rsc3_stim_circuit, split_rsc3_sample, check_matrix_from_dict_rsc3,
-    detectors_from_dataset_rsc3, num_detectors)
-from dataset_generation.rsc3_qpu_stim import (  # noqa: E402
-    build_rsc3_qpu_stim_circuit)
+from dataset_generation.rotatedSurface3_stim import (  # noqa: E402
+    build_rotatedSurface3_stim_circuit, split_rotatedSurface3_sample, check_matrix_from_dict_rotatedSurface3,
+    detectors_from_dataset_rotatedSurface3, num_detectors)
+from dataset_generation.rotatedSurface3_qpu_stim import (  # noqa: E402
+    build_rotatedSurface3_qpu_stim_circuit)
 
 STIM_SHOTS = 512
 AER_SHOTS = 400
@@ -69,15 +69,15 @@ IDEAL = "ideal/dp0_mf0_rf0_gd0"
 
 
 def stim_run(inject=None, inject_ops=()):
-    c = build_rsc3_stim_circuit(CYCLES, "X", 0.0, IDEAL, inject=inject,
+    c = build_rotatedSurface3_stim_circuit(CYCLES, "X", 0.0, IDEAL, inject=inject,
                                 inject_ops=inject_ops)
     raw = c.compile_sampler().sample(shots=STIM_SHOTS)
-    syn, dat = split_rsc3_sample(raw, CYCLES)
+    syn, dat = split_rotatedSurface3_sample(raw, CYCLES)
     return syn, dat, np.ones(syn.shape[0])
 
 
 def aer_run(inject=None, inject_ops=()):
-    qc = RSC3Hardware(CYCLES).build_circuit(0, inject, inject_ops)
+    qc = RotatedSurface3Hardware(CYCLES).build_circuit(0, inject, inject_ops)
     counts = AerSimulator().run(qc, shots=AER_SHOTS).result().get_counts()
     syn, dat, w = [], [], []
     for bs, cnt in counts.items():
@@ -87,7 +87,7 @@ def aer_run(inject=None, inject_ops=()):
         w.append(cnt)
     syn = np.array(syn, dtype=np.uint8)
     dat = np.array(dat, dtype=np.uint8)
-    mat = check_matrix_from_dict_rsc3(check_values(syn, CYCLES), CYCLES)
+    mat = check_matrix_from_dict_rotatedSurface3(check_values(syn, CYCLES), CYCLES)
     return mat, dat, np.array(w)
 
 
@@ -145,18 +145,18 @@ def stim_det_stream(inject_ops=()):
     its reference from a noiseless run of the SAME circuit, so an
     explicitly injected Pauli is absorbed into the reference and never
     fires a detection event. Reconstructing the detectors from raw
-    values through detectors_from_dataset_rsc3 anchors them to the
+    values through detectors_from_dataset_rotatedSurface3 anchors them to the
     |0>_L expectations instead, which is what the pipeline (and MWPM)
     actually consumes."""
     syn, dat, _ = stim_run(inject_ops=inject_ops)
-    det = detectors_from_dataset_rsc3(syn, dat, CYCLES)  # MR values
+    det = detectors_from_dataset_rotatedSurface3(syn, dat, CYCLES)  # MR values
     return bool((det == det[0]).all()), det[0]
 
 
 def aer_det_stream(inject_ops=()):
     """Detector reconstruction of the Aer run (must be shot-independent)."""
     mat, dat, w = aer_run(inject_ops=inject_ops)
-    det = detectors_from_dataset_rsc3(mat, dat, CYCLES)
+    det = detectors_from_dataset_rotatedSurface3(mat, dat, CYCLES)
     return bool((det == det[0]).all()), det[0]
 
 
@@ -164,7 +164,7 @@ def main():
     ok = True
 
     # [A] Stim detector determinism
-    c = build_rsc3_stim_circuit(CYCLES, "X", 0.0, IDEAL)
+    c = build_rotatedSurface3_stim_circuit(CYCLES, "X", 0.0, IDEAL)
     det = np.asarray(c.compile_detector_sampler().sample(
         shots=STIM_SHOTS, append_observables=True), dtype=np.uint8)
     a_ok = det.sum() == 0 and det.shape[1] == num_detectors(CYCLES) + 1
@@ -232,32 +232,32 @@ def main():
               f"aer==resid=={np.array_equal(a_hook, a_resid)} "
               f"{'PASS' if good else 'FAIL'}")
 
-    # [G] hardware-shaped rsc3 Stim circuit (surface QPU-profile path)
+    # [G] hardware-shaped rotatedSurface3 Stim circuit (surface QPU-profile path)
     # (a) noiseless detector determinism
-    cq = build_rsc3_qpu_stim_circuit(CYCLES)
+    cq = build_rotatedSurface3_qpu_stim_circuit(CYCLES)
     detq = np.asarray(cq.compile_detector_sampler().sample(
         shots=STIM_SHOTS, append_observables=True), dtype=np.uint8)
     ga_ok = (detq.sum() == 0
              and detq.shape[1] == num_detectors(CYCLES) + 1)
-    print(f"[G-a] rsc3 HW-shaped Stim noiseless detectors+observable "
+    print(f"[G-a] rotatedSurface3 HW-shaped Stim noiseless detectors+observable "
           f"all-zero: {'PASS' if ga_ok else 'FAIL'} "
           f"(shape={detq.shape}, sum={detq.sum()})")
     ok &= ga_ok
 
     # (b) single-error signatures vs Aer, (c) deterministic
-    #     detector-stream equality vs the abstract rsc3 Stim circuit —
+    #     detector-stream equality vs the abstract rotatedSurface3 Stim circuit —
     #     detectors reconstructed from RAW values (stim's own detector
     #     sampler absorbs explicit Paulis into its reference, see the
     #     stim_det_stream note)
     def qpu_value_run(inject=None, shots=64):
-        c = build_rsc3_qpu_stim_circuit(CYCLES, inject=inject)
+        c = build_rotatedSurface3_qpu_stim_circuit(CYCLES, inject=inject)
         raw = np.asarray(c.compile_sampler().sample(shots), dtype=np.uint8)
-        syn, dat = split_rsc3_sample(raw, CYCLES)
-        mat = check_matrix_from_dict_rsc3(check_values(syn, CYCLES), CYCLES)
+        syn, dat = split_rotatedSurface3_sample(raw, CYCLES)
+        mat = check_matrix_from_dict_rotatedSurface3(check_values(syn, CYCLES), CYCLES)
         return mat, dat
 
-    print("[G-b/c] rsc3 HW-shaped Stim vs Aer signatures / vs abstract "
-          "rsc3 Stim detector streams:")
+    print("[G-b/c] rotatedSurface3 HW-shaped Stim vs Aer signatures / vs abstract "
+          "rotatedSurface3 Stim detector streams:")
     for pauli, dc in cases:
         inject = (pauli, dc, 0)
         q_mat, q_dat = qpu_value_run(inject)
@@ -267,8 +267,8 @@ def main():
         stabs = Z_STABS if pauli == "X" else X_STABS
         exp = sorted(n for n, s in stabs.items() if dc in s)
         s_syn, s_dat, _ = stim_run(inject=inject)
-        det_abs = detectors_from_dataset_rsc3(s_syn, s_dat, CYCLES)
-        det_qpu = detectors_from_dataset_rsc3(q_mat, q_dat, CYCLES)
+        det_abs = detectors_from_dataset_rotatedSurface3(s_syn, s_dat, CYCLES)
+        det_qpu = detectors_from_dataset_rotatedSurface3(q_mat, q_dat, CYCLES)
         stream_ok = (bool((det_abs == det_abs[0]).all())
                      and bool((det_qpu == det_qpu[0]).all())
                      and np.array_equal(det_abs[0], det_qpu[0])
@@ -289,7 +289,7 @@ def main():
               f"{'PASS' if f_ok else 'FAIL ' + str(missing[:5])}")
     else:
         print("[F] ibm_miami embedding: SKIP (no coupling_ibm_miami.json — "
-              "run heavyhex_circuits/fetch_coupling.py first)")
+              "run circuits/heavyhex/fetch_coupling.py first)")
 
     print(f"\nOVERALL: {'ALL PASS' if ok else 'FAILURES PRESENT'}")
     return 0 if ok else 1

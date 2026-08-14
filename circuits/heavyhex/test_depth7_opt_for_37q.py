@@ -7,10 +7,10 @@ import numpy as np
 from qiskit_aer import AerSimulator
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from heavyhex_circuits.heavyhex_depth7_opt_for_37q import (  # noqa: E402
+from circuits.heavyhex.heavyhex_depth7_opt_for_37q import (  # noqa: E402
     HeavyHex37QDepthOpt as HeavyHex37Q, check_values, CYCLE_ORDER,
     X_INRUN_SUPPORT, N_CHECKS)
-from heavyhex_circuits.heavyhex_37q import (  # noqa: E402
+from circuits.heavyhex.heavyhex_37q import (  # noqa: E402
     Z_STABS, X_STABS, DATA_PHYS, LOGICAL_Z)
 
 SHOTS = 400
