@@ -143,6 +143,47 @@ GNN: model/gnn_skeleton.py (P1 마일스톤에서 추가; 같은 인터페이스
 - **최종 성적**: best-val-LER 체크포인트의 **test head-LER**
   (및 `LER/MWPM ratio`)
 
+### QPU 캘리브레이션 평균 프로파일 (`qpu/...`, mode: qpu_avg_v1)
+
+실제 QPU 제출 기록(hardware/runs/의 스냅샷)에서 **캘리브레이션 평균
+노이즈 프로파일**을 만들어, 하드웨어와 같은 구조의 Stim 회로로
+데이터셋을 생성/학습할 수 있어:
+
+```bash
+# 1) 프로파일 생성: 같은 백엔드의 non-dry-run 최신 N개(기본 5)를 평균
+python dataset_generation/make_qpu_avg_profile.py                # 자동 백엔드
+python dataset_generation/make_qpu_avg_profile.py --n-runs 3 --backend ibm_yonsei
+# -> noise_profiles.json에 qpu/<backend>_avg<N>_<해시8> 이름으로 등록
+
+# 2) 게이트 (섹션 [E] 포함 ALL PASS 필수) -> 데이터셋 -> 학습
+python verification/verify_equivalence.py
+python dataset_generation/make_dataset.py -n qpu/<이름> --smoke
+python train.py --model gnn -n qpu/<이름> -p 0.005 --mwpm
+```
+
+- **추출값**: run별 target.pkl(폴백: properties.json)에서 큐빗별 readout
+  error, 1Q error(sx 우선), 물리 엣지별 2Q error를 뽑아 run 간 산술 평균 →
+  `embedding_for(backend)`로 37q 패치 라벨에 매핑해 기록. 백엔드가 다른
+  run은 절대 섞지 않고, run이 부족하면 있는 만큼 평균(경고 출력).
+- **버저닝**: 이름의 `<해시8>`은 run id 목록의 sha256 앞 8자리 — run
+  조합이 바뀌면 프로파일 이름이 바뀌어서, 그 이름이 박힌 데이터셋
+  폴더/체크포인트의 계보가 유지돼. provenance(run id, submitted_at,
+  소스 파일, 생성 시각)도 프로파일에 남아 (로컬 경로는 기록 안 함).
+- **회로**: `qpu/` 프로파일은 추상 25q 회로 대신
+  [dataset_generation/heavyhex37_qpu_stim.py](dataset_generation/heavyhex37_qpu_stim.py)의
+  **하드웨어형 37q Stim 회로**(bridge 포함, no-reset ancilla,
+  depth-7 fold 구조 미러링)로 생성돼. 게이트/측정마다 해당 물리
+  큐빗·엣지의 평균 캘리브레이션 에러가 붙어 (CX→DEPOLARIZE2,
+  H→DEPOLARIZE1(sx 프록시), 측정 직전→X_ERROR readout). detector는 raw
+  측정 기록의 XOR 전개로 정의되지만 순서는 기존 `_append_detectors`와
+  동일해서 텐서/MWPM 재구성 로직은 그대로야. `qpu/` 프로파일은 기본
+  그리드(ALL_NOISE)에 **포함되지 않아** — `-n qpu/<이름>`으로 명시 선택.
+- **미반영 노이즈 항목** (평균 캘리브레이션 모델의 한계):
+  캘리브레이션 드리프트(run 간/내 변화), T1/T2 idle 감쇠·delay 에러
+  (DD 동작 포함), 측정 crosstalk/상관 readout 에러, coherent(비-Pauli)
+  에러 — H는 sx 프록시 1회의 depolarizing으로 근사돼. QPU 실측과의
+  잔차는 이 항목들에서 나온다고 보면 돼.
+
 ## 2. 환경 설정
 
 ```bash

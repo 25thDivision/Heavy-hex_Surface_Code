@@ -48,8 +48,8 @@ sys.path.insert(0, str(_ROOT))
 from dataset_generation import load_options, load_sweep  # noqa: E402
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     build_stim_circuit, sample_flips, syndrome_tensor, logical_label,
-    noise_tag, DISTANCE, ERROR_TYPES, ERROR_RATES, ALL_NOISE,
-    NOISE_PROFILES)
+    noise_tag, is_qpu_profile, DISTANCE, ERROR_TYPES, ERROR_RATES,
+    ALL_NOISE, NOISE_PROFILES)
 
 # Default shot counts (d=3 entries)
 TRAIN_SAMPLES = 10_000_000
@@ -121,20 +121,25 @@ def sweep_combos(args):
             for n in noises for p in rates for et in etypes]
 
 
-def generate_split(circuit, num_cycles, total, seed, desc):
+def generate_split(circuit, num_cycles, total, seed, desc,
+                   sampler=sample_flips):
     """Sample `total` shots in CHUNK batches; return (features, labels, logical).
 
     Uses FlipSimulator flips: identical to measured values for every
     downstream quantity (Z-planes, X-plane XORs, detectors, logical
-    parity), while additionally providing well-defined per-qubit labels."""
+    parity), while additionally providing well-defined per-qubit labels.
+    `sampler` returns (check-value matrix, final-data bits): the abstract
+    circuit's sample_flips, or heavyhex37_qpu_stim.sample_qpu_flips for
+    the hardware-shaped no-reset circuit (raw flips XOR-chained back to
+    check values)."""
     feats = np.zeros((total, 2 * num_cycles, 4, 5), dtype=np.uint8)
     labels = np.zeros((total, 17), dtype=np.uint8)
     done, chunk_i = 0, 0
     t0 = time.time()
     while done < total:
         n = min(CHUNK, total - done)
-        syn, dat = sample_flips(circuit, n, num_cycles,
-                                seed=seed * 100003 + chunk_i)
+        syn, dat = sampler(circuit, n, num_cycles,
+                           seed=seed * 100003 + chunk_i)
         feats[done:done + n] = syndrome_tensor(syn, num_cycles)
         labels[done:done + n] = dat
         done += n
@@ -170,7 +175,16 @@ def main():
         # e.g. dataset/heavyhex/dp0.001_mf0.01_rf0.01_gd0.008/
         ndir = outdir / args.code / noise_tag(noise)
         ndir.mkdir(parents=True, exist_ok=True)
-        circuit = build_stim_circuit(cycles, et, p, noise)
+        if is_qpu_profile(noise):
+            # calibration-averaged profile -> hardware-shaped 37q circuit
+            from dataset_generation.heavyhex37_qpu_stim import (
+                build_qpu_stim_circuit, sample_qpu_flips)
+            circuit = build_qpu_stim_circuit(cycles, et, p,
+                                             NOISE_PROFILES[noise])
+            sampler = sample_qpu_flips
+        else:
+            circuit = build_stim_circuit(cycles, et, p, noise)
+            sampler = sample_flips
         for split, n, seed_off in (("train", n_train, 0),
                                    ("test", n_test, 1)):
             fname = ndir / (f"{split}_d{DISTANCE}_c{cycles}"
@@ -183,7 +197,8 @@ def main():
             # generated separately, i.e. independent samples)
             seed = args.seed * 1000 + hash((noise, p, et)) % 10007 + seed_off
             f, l, y = generate_split(circuit, cycles, n,
-                                     seed & 0x7FFFFFFF, split)
+                                     seed & 0x7FFFFFFF, split,
+                                     sampler=sampler)
             # atomic write: dump to a temp file, then rename. A
             # crashed/concurrent run can never leave a half-written
             # npz under the final name (the exists-skip above would

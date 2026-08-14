@@ -33,13 +33,27 @@ sys.path.insert(0, str(_ROOT))
 
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     build_stim_circuit, detectors_from_tensor, detectors_from_dataset,
-    noise_tag, DISTANCE, ERROR_RATES, ERROR_TYPES, ALL_NOISE)
+    noise_tag, is_qpu_profile, NOISE_PROFILES,
+    DISTANCE, ERROR_RATES, ERROR_TYPES, ALL_NOISE)
 from evaluation.metrics import ler  # noqa: E402
 
 
 def build_matching(num_cycles, error_type, p, noise_profile):
-    """Matching decoder from the DEM of the noisy abstract circuit."""
-    circuit = build_stim_circuit(num_cycles, error_type, p, noise_profile)
+    """Matching decoder from the DEM of the noisy reference circuit.
+
+    Plain 4-parameter profiles use the abstract 25q circuit; QPU
+    calibration profiles (mode: qpu_avg_v1) use the hardware-shaped 37q
+    circuit — its detectors follow the same order, so the same detector
+    reconstructions feed either Matching object."""
+    if is_qpu_profile(noise_profile):
+        from dataset_generation.heavyhex37_qpu_stim import (
+            build_qpu_stim_circuit)
+        prof = (NOISE_PROFILES[noise_profile]
+                if isinstance(noise_profile, str) else noise_profile)
+        circuit = build_qpu_stim_circuit(num_cycles, error_type, p, prof)
+    else:
+        circuit = build_stim_circuit(num_cycles, error_type, p,
+                                     noise_profile)
     dem = circuit.detector_error_model(decompose_errors=True)
     return pymatching.Matching.from_detector_error_model(dem)
 

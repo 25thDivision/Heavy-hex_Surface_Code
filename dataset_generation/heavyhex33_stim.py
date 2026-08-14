@@ -88,18 +88,29 @@ X_POS = [j for j, n in enumerate(CHECK_AT) if n in X_STABS]   # 8 X-check slots
 ERROR_TYPES = ["X"]
 ERROR_RATES = [0.005, 0.01, 0.05]
 
-# noise_profiles.json (repo root) defines every runnable profile; all of them
-# are generated/trained/evaluated by default. The noiseless profile is a
-# fixture for verification/verify_equivalence.py only, so it stays out of the
-# JSON (and out of ALL_NOISE).
+# noise_profiles.json (repo root) defines every runnable profile; the plain
+# 4-parameter ones are generated/trained/evaluated by default. Profiles with
+# a "mode" key (e.g. "qpu_avg_v1" written by make_qpu_avg_profile.py) use the
+# hardware-shaped 37q generator (heavyhex37_qpu_stim.py) and stay OUT of the
+# default grid — select them explicitly with -n qpu/<name>. The noiseless
+# profile is a fixture for verification/verify_equivalence.py only, so it
+# stays out of the JSON (and out of ALL_NOISE).
 with open(_ROOT / "noise_profiles.json") as _f:
     _JSON_PROFILES = json.load(_f)
-ALL_NOISE = list(_JSON_PROFILES)
+ALL_NOISE = [n for n, prof in _JSON_PROFILES.items() if "mode" not in prof]
 NOISE_PROFILES = {
     "ideal/dp0_mf0_rf0_gd0": {
         "data_depol": 0.0, "meas_flip": 0.0, "reset_flip": 0.0, "gate_depol": 0.0},
     **_JSON_PROFILES,
 }
+
+
+def is_qpu_profile(noise_profile):
+    """True for calibration-averaged profiles (mode: qpu_avg_v1) that must
+    be built with heavyhex37_qpu_stim.build_qpu_stim_circuit."""
+    prof = (NOISE_PROFILES.get(noise_profile, {})
+            if isinstance(noise_profile, str) else noise_profile)
+    return isinstance(prof, dict) and "mode" in prof
 
 
 def noise_tag(noise_profile):
@@ -182,6 +193,11 @@ def build_stim_circuit(num_cycles=3, noise_type="X", p=0.0,
     """
     prof = (NOISE_PROFILES[noise_profile] if isinstance(noise_profile, str)
             else dict(noise_profile))
+    if "mode" in prof:
+        raise ValueError(
+            f"noise profile '{noise_profile}' is a QPU calibration profile "
+            f"(mode={prof['mode']}) — build it with "
+            f"heavyhex37_qpu_stim.build_qpu_stim_circuit instead.")
     dp, mf = prof["data_depol"], prof["meas_flip"]
     rf, gd = prof["reset_flip"], prof["gate_depol"]
 

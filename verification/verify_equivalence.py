@@ -16,6 +16,20 @@ Dataset generation (T2) must NOT proceed until this script prints ALL PASS.
   [D] For injected single errors, the set of checks firing at cycle 1 is
       identical between Stim and Aer (semantic confirmation of
       order/meaning agreement)
+  [E] Hardware-shaped 37q Stim circuit (heavyhex37_qpu_stim, the QPU
+      calibration-profile generator; bridges + no-reset ancillas):
+      (a) with zero noise, every detector is deterministic
+      (b) injected single errors fire the same checks as Aer (raw
+          measured values through the per-ancilla XOR chain, like [D])
+      (c) the deterministic detector stream (incl. the final-Z detectors
+          and the observable) is bit-identical to the abstract 25q Stim
+          circuit's — check-value-level equivalence of the XOR chain vs
+          MR, the same contract as hardware vs Stim (a deterministic
+          detector stream determines the Z-check value stream by
+          telescoping, and the X-check stream up to its random cycle-0
+          reference)
+      Dataset generation from qpu/* profiles must NOT proceed until this
+      section passes together with the rest (ALL PASS).
 """
 import sys
 from pathlib import Path
@@ -33,6 +47,8 @@ from heavyhex_circuits.heavyhex_depth7_opt_for_37q import (
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     build_stim_circuit, split_stim_sample, check_matrix_from_dict,
     num_detectors, DIDX, LOGICAL_Z_IDX, CHECK_AT)
+from dataset_generation.heavyhex37_qpu_stim import (  # noqa: E402
+    build_qpu_stim_circuit)
 
 STIM_SHOTS = 512
 AER_SHOTS = 400
@@ -144,6 +160,54 @@ def main():
         good = f_stim == f_aer == exp
         ok &= good
         print(f"  {pauli} q{dq}: stim={f_stim} aer={f_aer} exp={exp} "
+              f"{'PASS' if good else 'FAIL'}")
+
+    # [E] hardware-shaped 37q Stim circuit (QPU-profile generator)
+    # (a) noiseless detector determinism
+    c37 = build_qpu_stim_circuit(CYCLES)
+    det37 = np.asarray(c37.compile_detector_sampler().sample(
+        shots=STIM_SHOTS, append_observables=True), dtype=np.uint8)
+    ea_ok = (det37.sum() == 0
+             and det37.shape[1] == num_detectors(CYCLES) + 1)
+    print(f"[E-a] 37q HW-shaped Stim noiseless detectors+observable "
+          f"all-zero: {'PASS' if ea_ok else 'FAIL'} "
+          f"(shape={det37.shape}, sum={det37.sum()})")
+    ok &= ea_ok
+
+    # (b) single-error signatures vs Aer (raw values -> XOR chain, like
+    #     the Aer path), (c) deterministic detector-stream equality vs
+    #     the abstract 25q Stim circuit (incl. final-Z + observable)
+    def qpu_value_run(inject=None, shots=64):
+        c = build_qpu_stim_circuit(CYCLES, inject=inject)
+        raw = np.asarray(c.compile_sampler().sample(shots), dtype=np.uint8)
+        syn, dat = split_stim_sample(raw, CYCLES)
+        return check_matrix_from_dict(check_values(syn, CYCLES), CYCLES)
+
+    def det_stream(circuit, shots=64):
+        """(deterministic?, first detector+observable row)"""
+        d = np.asarray(circuit.compile_detector_sampler().sample(
+            shots=shots, append_observables=True), dtype=np.uint8)
+        return bool((d == d[0]).all()), d[0]
+
+    print("[E-b/c] 37q Stim vs Aer signatures / vs 25q Stim detector "
+          "streams:")
+    for pauli, dq in cases:
+        inject = (pauli, dq, 0)
+        f_qpu = fired_at_cycle1(qpu_value_run(inject),
+                                np.ones(64))
+        a_mat, _, a_w = aer_run(inject=inject)
+        f_aer = fired_at_cycle1(a_mat, a_w)
+        stabs = Z_STABS if pauli == "X" else X_STABS
+        exp = sorted(n for n, s in stabs.items() if dq in s)
+        det25_ok, det25 = det_stream(build_stim_circuit(
+            CYCLES, "X", 0.0, "ideal/dp0_mf0_rf0_gd0", inject=inject))
+        det37_ok, det37 = det_stream(
+            build_qpu_stim_circuit(CYCLES, inject=inject))
+        stream_ok = det25_ok and det37_ok and np.array_equal(det25, det37)
+        good = (f_qpu == f_aer == exp) and stream_ok
+        ok &= good
+        print(f"  {pauli} q{dq}: 37q={f_qpu} aer={f_aer} exp={exp} "
+              f"detstream={'==' if stream_ok else '!='}25q "
               f"{'PASS' if good else 'FAIL'}")
 
     print(f"\nOVERALL: {'ALL PASS' if ok else 'FAILURES PRESENT'}")
