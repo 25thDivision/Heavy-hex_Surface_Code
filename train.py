@@ -2,10 +2,12 @@
 """
 Training entry point — you don't need to modify this file
 ==========================================================
-Trains the dual-head CNN (model/cnn_skeleton.py — the file you complete)
-on the Stim datasets and logs the metrics per epoch. Model selection is
-by best validation head-LER (the loss is LER-first), with patience-based
-early stopping.
+Trains a dual-head decoder (--model {cnn,gnn}; the skeleton file you
+complete lives at model/<name>_skeleton.py) on the Stim datasets and logs
+the metrics per epoch. Checkpoint selection is by best validation
+head-LER (the loss is LER-first), with patience-based early stopping.
+--code {heavyhex,surface} selects the code family (dataset subtree and
+result/checkpoint tag).
 
 Metric status: the **head-LER** (logical head) is the official metric.
 `ECR (diagnostic, sim-only)` and `parity_LER (diagnostic)` are reported
@@ -16,7 +18,7 @@ The "validation set" is the independently generated test file
 (train/test files, not a ratio split).
 
 Usage:
-  python train.py --smoke                    # quick end-to-end check
+  python train.py --model cnn --smoke        # quick end-to-end check
   python train.py -n realistic/dp0.001_mf0.01_rf0.01_gd0.008 -p 0.005
   python train.py --all                      # full noise x rate grid
   python train.py --config train_sweep.json  # JSON-driven sweep (see below)
@@ -56,6 +58,7 @@ sys.path.insert(0, str(_ROOT))
 from dataset_generation import load_options  # noqa: E402
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     noise_tag, DISTANCE, ERROR_RATES, ERROR_TYPES, ALL_NOISE)
+from model import get_model_module, get_model_class, MODEL_NAMES  # noqa: E402
 from model.data import load_split, FastTensorDataLoader  # noqa: E402
 from evaluation.metrics import (  # noqa: E402
     ecr, bit_accuracy, ler_from_logits, parity_ler_from_qubit_logits)
@@ -68,7 +71,16 @@ LR = 1e-3
 
 
 def parse_args():
-    ap = argparse.ArgumentParser(description="Train the heavy-hex CNN decoder")
+    ap = argparse.ArgumentParser(description="Train a QEC decoder model")
+    ap.add_argument("--model", choices=MODEL_NAMES, default="cnn",
+                    help="decoder architecture (model/<name>_skeleton.py); "
+                         "reflected in result/checkpoint names "
+                         "({MODEL}_{tag})")
+    ap.add_argument("--code", choices=["heavyhex", "surface"],
+                    default="heavyhex",
+                    help="code family; selects dataset/<code>/ and is part "
+                         "of the result/checkpoint tag (surface lands with "
+                         "the rsc3 milestone)")
     ap.add_argument("-n", "--noise", nargs="+", default=None)
     ap.add_argument("-p", "--rates", nargs="+", type=float, default=None)
     ap.add_argument("-e", "--error-types", nargs="+", default=None)
@@ -147,14 +159,6 @@ def ensure_coupling_json(backend="ibm_yonsei"):
               f"training doesn't need it.")
 
 
-def get_model_module(use_solution):
-    if use_solution:
-        from solutions import cnn_solution as mod
-    else:
-        from model import cnn_skeleton as mod
-    return mod
-
-
 def evaluate(model, loader, mod, aux_weight, pos_weight, device):
     model.eval()
     q_logits, l_logits, y_qs, y_ls = [], [], [], []
@@ -199,11 +203,12 @@ def fmt_ratio(ratio):
 
 
 def train_one(args, mod, noise, p, et, device):
-    print(f"\n{'=' * 70}\n>>> {noise} | p={p} | {et} | cycles={args.cycles}")
-    Xtr, yqtr, yltr = load_split(args.data_dir, noise, "train", args.cycles,
-                                 p, et, device)
-    Xva, yqva, ylva = load_split(args.data_dir, noise, "test", args.cycles,
-                                 p, et, device)
+    print(f"\n{'=' * 70}\n>>> {args.model}/{args.code} | {noise} | p={p} | "
+          f"{et} | cycles={args.cycles}")
+    Xtr, yqtr, yltr = load_split(args.data_dir, args.code, noise, "train",
+                                 args.cycles, p, et, device)
+    Xva, yqva, ylva = load_split(args.data_dir, args.code, noise, "test",
+                                 args.cycles, p, et, device)
     print(f"    train {tuple(Xtr.shape)}  val {tuple(Xva.shape)}  -> {device}")
 
     train_loader = FastTensorDataLoader(Xtr, yqtr, yltr,
@@ -211,7 +216,8 @@ def train_one(args, mod, noise, p, et, device):
     val_loader = FastTensorDataLoader(Xva, yqva, ylva,
                                       batch_size=args.batch_size)
 
-    model = mod.HeavyHexCNN(in_channels=2 * args.cycles).to(device)
+    model_cls = get_model_class(args.model, args.solution)
+    model = model_cls(in_channels=2 * args.cycles).to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
     pos_weight = None
@@ -221,18 +227,19 @@ def train_one(args, mod, noise, p, et, device):
             w = float(np.sqrt(w))
         pos_weight = torch.full((17,), w, device=device)
 
-    # flat layout: results/train/CNN_d3_c3_p0.005_dp0.001_..._gd0.008.csv
-    # (d = code distance, c = number of QEC cycles; the error type is
-    #  omitted since the grid is X-only)
-    tag = f"d{DISTANCE}_c{args.cycles}_p{p}_{noise_tag(noise)}"
+    # flat layout: results/train/CNN_heavyhex_d3_c3_p0.005_dp0.001_....csv
+    # ({MODEL}_{code}_d..., d = code distance, c = number of QEC cycles;
+    #  the error type is omitted since the grid is X-only)
+    tag = f"{args.code}_d{DISTANCE}_c{args.cycles}_p{p}_{noise_tag(noise)}"
     if getattr(args, "run_name", ""):
         tag += f"_{args.run_name}"
+    prefix = args.model.upper()
     result_dir = Path(args.outdir)
     ckpt_dir = Path(args.ckpt_dir)
     result_dir.mkdir(parents=True, exist_ok=True)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = result_dir / f"CNN_{tag}.csv"
-    ckpt_path = ckpt_dir / f"CNN_{tag}.pt"
+    csv_path = result_dir / f"{prefix}_{tag}.csv"
+    ckpt_path = ckpt_dir / f"{prefix}_{tag}.pt"
 
     # MWPM baseline on the same val data (once, before the loop) so every
     # evaluation report can carry the LER/MWPM ratio column
@@ -241,7 +248,8 @@ def train_one(args, mod, noise, p, et, device):
         from baseline.mwpm import mwpm_ler_from_dataset
         from model.data import npz_path
         mwpm_ler = mwpm_ler_from_dataset(
-            npz_path(args.data_dir, noise, "test", args.cycles, p, et))
+            npz_path(args.data_dir, args.code, noise, "test",
+                     args.cycles, p, et))
         print(f"    MWPM baseline LER (val data): {mwpm_ler:.4f}")
 
     best = {"ler": float("inf"), "ecr": 0.0, "acc": 0.0,
@@ -323,11 +331,14 @@ def expand_config(args):
 
 def main():
     args = parse_args()
+    if args.code != "heavyhex":
+        sys.exit(f"--code {args.code}: not implemented yet — the rotated "
+                 f"surface code path arrives with the rsc3 milestone.")
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     run_list = expand_config(args) if args.config else [args]
 
     ensure_coupling_json()
-    mod = get_model_module(args.solution)
+    mod = get_model_module(args.model, args.solution)
     print(f"model module: {mod.__name__} | device: {device}"
           + (f" | sweep: {args.config} ({len(run_list)} runs)"
              if args.config else ""))
@@ -351,8 +362,8 @@ def main():
                         print(f"    skipped: {e}")
                     except NotImplementedError as e:
                         print(f"\nERROR: the model is not implemented yet — "
-                              f"you need to fill in model/cnn_skeleton.py "
-                              f"({e})")
+                              f"you need to fill in "
+                              f"model/{ra.model}_skeleton.py ({e})")
                         sys.exit(1)
 
     if rows:

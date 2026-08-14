@@ -79,16 +79,22 @@ def main():
     ap.add_argument("-n", "--noise", nargs="+", default=ALL_NOISE)
     ap.add_argument("-p", "--rates", nargs="+", type=float, default=ERROR_RATES)
     ap.add_argument("-e", "--error-types", nargs="+", default=ERROR_TYPES)
+    ap.add_argument("--code", choices=["heavyhex", "surface"],
+                    default="heavyhex",
+                    help="code family (dataset/<code>/ subtree)")
     ap.add_argument("--cycles", type=int, default=3)
     ap.add_argument("--split", default="test")
     ap.add_argument("--data-dir", default=str(_ROOT / "dataset"))
     args = ap.parse_args()
+    if args.code != "heavyhex":
+        sys.exit(f"--code {args.code}: not implemented yet — arrives with "
+                 f"the rsc3 milestone.")
 
     print(f"{'noise':<42} {'p':>6} {'type':>4} {'raw_LER':>8} {'MWPM_LER':>9}")
     for noise in args.noise:
         for p in args.rates:
             for et in args.error_types:
-                f = (Path(args.data_dir) / noise_tag(noise) /
+                f = (Path(args.data_dir) / args.code / noise_tag(noise) /
                      f"{args.split}_d{DISTANCE}_c{args.cycles}_p{p}_{et}.npz")
                 if not f.exists():
                     print(f"{noise:<42} {p:>6} {et:>4}   (missing: {f.name})")

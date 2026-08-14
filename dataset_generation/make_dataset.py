@@ -65,6 +65,10 @@ def parse_args():
                     help=f"Error_Rate list (default: {ERROR_RATES})")
     ap.add_argument("-e", "--error-types", nargs="+", default=None,
                     help=f"Error_Type list (default: {ERROR_TYPES})")
+    ap.add_argument("--code", choices=["heavyhex", "surface"],
+                    default="heavyhex",
+                    help="code family; selects the dataset/<code>/ subtree "
+                         "(surface generation lands with the rsc3 milestone)")
     ap.add_argument("--cycles", type=int, default=3,
                     help="number of QEC cycles (default 3, same as HW run)")
     ap.add_argument("--train-samples", type=int, default=TRAIN_SAMPLES)
@@ -142,6 +146,9 @@ def generate_split(circuit, num_cycles, total, seed, desc):
 
 def main():
     args = parse_args()
+    if args.code != "heavyhex":
+        sys.exit(f"--code {args.code}: not implemented yet — the rotated "
+                 f"surface code generator arrives with the rsc3 milestone.")
     combos = sweep_combos(args)
     n_train = 10_000 if args.smoke else args.train_samples
     n_test = 2_000 if args.smoke else args.test_samples
@@ -159,9 +166,9 @@ def main():
         if noise not in NOISE_PROFILES:
             print(f"WARNING: unknown noise profile '{noise}', skipping")
             continue
-        # folder name = parameter tag only (no 'realistic/' level),
-        # e.g. dataset/dp0.001_mf0.01_rf0.01_gd0.008/
-        ndir = outdir / noise_tag(noise)
+        # folder = <code>/<parameter tag> (no 'realistic/' level),
+        # e.g. dataset/heavyhex/dp0.001_mf0.01_rf0.01_gd0.008/
+        ndir = outdir / args.code / noise_tag(noise)
         ndir.mkdir(parents=True, exist_ok=True)
         circuit = build_stim_circuit(cycles, et, p, noise)
         for split, n, seed_off in (("train", n_train, 0),

@@ -142,6 +142,9 @@ def cmd_submit(args):
     from qiskit import transpile, qpy
     from qiskit_ibm_runtime import SamplerV2
 
+    if args.code != "heavyhex":
+        sys.exit(f"--code {args.code}: not implemented yet — the rotated "
+                 f"surface code path arrives with the rsc3 milestone.")
     keys = load_keys()
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -184,7 +187,7 @@ def cmd_submit(args):
     print("   saved circuit.qpy (exact ISA circuit incl. DD delays)")
 
     meta = {"job_id": job.job_id() if job else None,
-            "backend": args.backend, "cycles": args.cycles,
+            "backend": args.backend, "code": args.code, "cycles": args.cycles,
             "shots": args.shots, "dd": args.dd,
             "initial_layout": layout,
             "submitted_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -280,25 +283,26 @@ def cmd_analyze(args):
     mwpm_ler = mwpm_ler_from_hardware(check_mat, dat, cycles, matching)
     rows.append(("MWPM", mwpm_ler, None, None))
 
-    # CNN: a single --ckpt, or every checkpoint/*.pt if none was given
+    # model head: a single --ckpt, or every checkpoint/{MODEL}_*.pt if
+    # none was given (the {MODEL} prefix keeps cnn/gnn checkpoints apart)
+    model_ul = args.model.upper()
     if args.ckpt:
         ckpts = [Path(args.ckpt)]
     else:
-        ckpts = sorted((_ROOT / "checkpoint").glob("*.pt"))
+        ckpts = sorted((_ROOT / "checkpoint").glob(f"{model_ul}_*.pt"))
         if not ckpts:
-            print("(no --ckpt and no checkpoint/*.pt: skipping CNN)")
+            print(f"(no --ckpt and no checkpoint/{model_ul}_*.pt: "
+                  f"skipping {model_ul})")
     if ckpts:
         import torch
-        if args.solution:
-            from solutions.cnn_solution import HeavyHexCNN
-        else:
-            from model.cnn_skeleton import HeavyHexCNN
+        from model import get_model_class
+        model_cls = get_model_class(args.model, args.solution)
         from evaluation.metrics import ler, parity_ler_from_qubit_logits
         tensor = syndrome_tensor(check_mat, cycles)
         for ckpt_path in ckpts:
             ckpt = torch.load(ckpt_path, map_location="cpu",
                               weights_only=False)
-            model = HeavyHexCNN(in_channels=2 * cycles)
+            model = model_cls(in_channels=2 * cycles)
             model.load_state_dict(ckpt["model_state_dict"])
             model.eval()
             preds, q_logits = [], []
@@ -309,11 +313,11 @@ def cmd_analyze(args):
                     preds.append((ll.numpy().ravel() > 0).astype(np.uint8))
                     q_logits.append(ql.numpy())
             pred = np.concatenate(preds)
-            cnn_ler = ler(pred, y_logical)
+            model_ler = ler(pred, y_logical)
             parity_ler = parity_ler_from_qubit_logits(
                 np.concatenate(q_logits), y_logical)
-            ratio = cnn_ler / mwpm_ler if mwpm_ler else None
-            rows.append((f"CNN ({ckpt_path.name})", cnn_ler,
+            ratio = model_ler / mwpm_ler if mwpm_ler else None
+            rows.append((f"{model_ul} ({ckpt_path.name})", model_ler,
                          parity_ler, ratio))
 
     def _fmt(v, spec=".4f"):
@@ -352,6 +356,10 @@ def cmd_all(args):
 def _submit_opts(p):
     p.add_argument("--backend", default="ibm_yonsei",
                    help="ibm_yonsei (default) or ibm_boston")
+    p.add_argument("--code", choices=["heavyhex", "surface"],
+                   default="heavyhex",
+                   help="code family (surface support lands with the rsc3 "
+                        "milestone)")
     p.add_argument("--cycles", type=int, default=3)
     p.add_argument("--shots", type=int, default=50_000)
     p.add_argument("--dd", default="XX4",
@@ -365,12 +373,15 @@ def _analyze_opts(p, cycles=True):
     if cycles:
         p.add_argument("--cycles", type=int, default=3,
                        help="fallback if job metadata is missing")
+    p.add_argument("--model", choices=["cnn", "gnn"], default="cnn",
+                   help="decoder architecture used for --ckpt loading; "
+                        "without --ckpt, evaluates checkpoint/{MODEL}_*.pt")
     p.add_argument("--ckpt", default=None,
-                   help="trained CNN checkpoint (.pt); omit to evaluate "
-                        "every checkpoint/*.pt")
+                   help="trained model checkpoint (.pt); omit to evaluate "
+                        "every checkpoint/{MODEL}_*.pt")
     p.add_argument("--solution", action="store_true",
                    help="load the model class from solutions/ instead of "
-                        "model/cnn_skeleton.py")
+                        "model/<model>_skeleton.py")
     p.add_argument("--mwpm-profile", default=ALL_NOISE[0],
                    help="noise profile used for the MWPM DEM weights")
     p.add_argument("--mwpm-p", type=float, default=0.005)
