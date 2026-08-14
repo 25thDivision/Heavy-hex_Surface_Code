@@ -145,7 +145,7 @@ python hardware/run_hw.py analyze --job-id <ID>    # code는 job.json에서 자�
 ```
 
 analyze는 job.json의 code를 자동으로 읽어 rotatedSurface3용 check-value 복원 /
-4×4 텐서화 / MWPM / 체크포인트({MODEL}_surface_*.pt) 분기를 태워.
+4×4 텐서화 / MWPM / 체크포인트(`*_surface_*.pt`, CNN/GNN 자동 인식) 분기를 태워.
 
 **기존 산출물 이관**: 코드 축 도입 전에 만든 로컬 데이터셋은
 `dataset/<노이즈태그>/`에 바로 있었어. 아래 한 줄로 heavyhex 산하로 옮기면 돼
@@ -276,8 +276,7 @@ python dataset_generation/make_dataset.py && python train.py
 #    (사전에 make_qpu_avg_profile.py로 qpu/<이름> 등록, 게이트 ALL PASS)
 #    train_sweep.json의 noise만 qpu/<이름>으로 바꿔 반복
 # 3) [실기기 축(선택)] run_hw.py analyze가 raw/MWPM/CNN/GNN을 한 표로 출력
-python hardware/run_hw.py analyze --job-id <ID>              # CNN 체크포인트들
-python hardware/run_hw.py analyze --job-id <ID> --model gnn  # GNN 체크포인트들
+python hardware/run_hw.py analyze --job-id <ID>   # CNN+GNN 전부 (파일명 접두사로 자동 인식)
 ```
 
 각 실행의 summary 표(모델·noise·p별 best epoch의 ler / mwpm_ler /
@@ -329,16 +328,18 @@ python baseline/mwpm.py
 # 4) QPU 검증 (keys.json 필요, 5. 참고)
 python hardware/run_hw.py submit --backend ibm_yonsei --dry-run   # 리허설
 python hardware/run_hw.py submit --backend ibm_yonsei             # 실제 제출
-python hardware/run_hw.py analyze --job-id <ID>   # checkpoint/CNN_*.pt 전부 평가
-python hardware/run_hw.py analyze --job-id <ID> --model gnn       # GNN 체크포인트 평가
+python hardware/run_hw.py analyze --job-id <ID>   # 해당 코드의 CNN+GNN 체크포인트 전부 평가
+python hardware/run_hw.py analyze --job-id <ID> --model gnn       # GNN만으로 제한
 python hardware/run_hw.py analyze --job-id <ID> \
        --ckpt checkpoint/CNN_heavyhex_d3_c3_p0.005_dp0.001_mf0.01_rf0.01_gd0.008.pt
 python hardware/run_hw.py all                     # 제출→완료 대기→분석 원샷
 ```
 
 analyze는 잡이 아직 안 끝났으면 알아서 폴링하며 기다렸다가 진행해.
-analyze의 `--model {cnn,gnn}` (기본 cnn)은 `--ckpt` 없이 돌릴 때 평가할
-체크포인트 집합(`checkpoint/{MODEL}_*.pt`)과 로딩할 모델 클래스를 정해.
+`--ckpt` 없이 돌리면 해당 코드의 `checkpoint/*.pt`를 전부 평가하는데,
+각 파일의 아키텍처는 `CNN_`/`GNN_` **파일명 접두사로 자동 인식**돼서
+한 리포트에 두 모델 행이 함께 나와. `--model {cnn,gnn}`은 한
+아키텍처로 제한하고 싶을 때만 주면 돼.
 
 ### 설정 파일 두 개 (repo 루트)
 
@@ -347,8 +348,10 @@ analyze의 `--model {cnn,gnn}` (기본 cnn)은 `--ckpt` 없이 돌릴 때 평가
   데이터셋 샘플 수(train_samples/test_samples), 최상위 `cycles`는 양쪽 공용.
   파일이 있으면 train.py / make_dataset.py가 자동으로 읽어 기본값을
   대체하고, CLI 인자를 명시하면 그쪽이 이겨.
-- **train_sweep.json** — *스윕* 정의: `runs`의 각 항목이
-  (노이즈, p, error_type + 하이퍼파라미터 오버라이드) 한 벌이야.
+- **[train_sweep.json](train_sweep.json)** — *스윕* 정의: `runs`의 각 항목이
+  (노이즈, p, error_type, model + 하이퍼파라미터 오버라이드) 한 벌이야.
+  **repo에 기본 파일이 들어 있어** — cnn/gnn 두 run(+mwpm)이라, 인자 없이
+  돌리면 같은 데이터로 두 모델을 이어 학습해 CNN/GNN/MWPM 통합 표가 나와.
   repo 루트에 이 파일이 있으면 make_dataset.py는 필요한 조합의 데이터셋을,
   train.py는 항목별 학습을 **자동으로** 돌려. 선택 인자(-n/-p/-e/--all/
   --smoke)를 명시하면 스윕 대신 그쪽이 돌고, `--config none`으로 끄거나

@@ -313,31 +313,56 @@ def cmd_analyze(args):
     rows.append(("MWPM", mwpm_ler, None, None))
 
     # model head: a single --ckpt, or every matching checkpoint if none
-    # was given ({MODEL} prefix keeps cnn/gnn apart; surface checkpoints
-    # carry the "_surface_" tag, legacy heavyhex names carry no code tag)
-    model_ul = args.model.upper()
+    # was given. The architecture is INFERRED from the {MODEL}_ filename
+    # prefix (CNN_/GNN_), so one analyze evaluates cnn and gnn rows in
+    # the same report; --model narrows it to one architecture. Surface
+    # checkpoints carry the "_surface_" tag, legacy heavyhex names carry
+    # no code tag.
+    from model import MODEL_REGISTRY
+
+    def model_of(path):
+        prefix = path.name.split("_", 1)[0].lower()
+        return prefix if prefix in MODEL_REGISTRY else None
+
     if args.ckpt:
-        ckpts = [Path(args.ckpt)]
+        p = Path(args.ckpt)
+        ckpts = [(model_of(p) or args.model or "cnn", p)]
     else:
-        ckpts = sorted(p for p in (_ROOT / "checkpoint").glob(
-            f"{model_ul}_*.pt")
-            if ("_surface_" in p.name) == (code == "surface"))
+        ckpts = []
+        for p in sorted((_ROOT / "checkpoint").glob("*.pt")):
+            mname = model_of(p)
+            if mname is None:
+                print(f"(skipping {p.name}: unknown model prefix)")
+                continue
+            if ("_surface_" in p.name) != (code == "surface"):
+                continue
+            if args.model and mname != args.model:
+                continue
+            ckpts.append((mname, p))
         if not ckpts:
-            print(f"(no --ckpt and no checkpoint/{model_ul}_*.pt for "
-                  f"code '{code}': skipping {model_ul})")
+            want = args.model or "cnn/gnn"
+            print(f"(no --ckpt and no matching checkpoint/*.pt for "
+                  f"code '{code}' / model {want}: skipping)")
     if ckpts:
         import torch
         from model import get_model_module, get_model_class, CODE_SPECS
-        mod = get_model_module(args.model, args.solution)
-        model_cls = get_model_class(args.model, args.solution)
         from evaluation.metrics import ler, parity_ler_from_qubit_logits
-        tensor = tensor_fn(check_mat, cycles)
-        # model-specific input prep (e.g. the GNN appends the final-Z
-        # detector channel, computed from the measured final data bits —
-        # the hardware counterpart of the simulation labels)
-        if hasattr(mod, "prepare_features"):
-            tensor = np.asarray(mod.prepare_features(tensor, dat, code))
-        for ckpt_path in ckpts:
+        base_tensor = tensor_fn(check_mat, cycles)
+        prepared = {}       # model name -> model-ready input tensor
+        for mname, ckpt_path in ckpts:
+            mod = get_model_module(mname, args.solution)
+            if mname not in prepared:
+                # model-specific input prep (e.g. the GNN appends the
+                # final-Z detector channel, computed from the measured
+                # final data bits — the hardware counterpart of the
+                # simulation labels)
+                t = base_tensor
+                if hasattr(mod, "prepare_features"):
+                    t = np.asarray(mod.prepare_features(base_tensor, dat,
+                                                        code))
+                prepared[mname] = t
+            tensor = prepared[mname]
+            model_cls = get_model_class(mname, args.solution)
             ckpt = torch.load(ckpt_path, map_location="cpu",
                               weights_only=False)
             model = model_cls(in_channels=2 * cycles,
@@ -357,7 +382,7 @@ def cmd_analyze(args):
             parity_ler = parity_ler_from_qubit_logits(
                 np.concatenate(q_logits), y_logical, code)
             ratio = model_ler / mwpm_ler if mwpm_ler else None
-            rows.append((f"{model_ul} ({ckpt_path.name})", model_ler,
+            rows.append((f"{mname.upper()} ({ckpt_path.name})", model_ler,
                          parity_ler, ratio))
 
     def _fmt(v, spec=".4f"):
@@ -417,9 +442,11 @@ def _analyze_opts(p, cycles=True):
                        default=None,
                        help="fallback if job metadata is missing "
                             "(e.g. offline --npz re-analysis)")
-    p.add_argument("--model", choices=["cnn", "gnn"], default="cnn",
-                   help="decoder architecture used for --ckpt loading; "
-                        "without --ckpt, evaluates checkpoint/{MODEL}_*.pt")
+    p.add_argument("--model", choices=["cnn", "gnn"], default=None,
+                   help="restrict the evaluation to one architecture; "
+                        "default: evaluate every matching checkpoint, "
+                        "inferring cnn/gnn from the {MODEL}_ filename "
+                        "prefix")
     p.add_argument("--ckpt", default=None,
                    help="trained model checkpoint (.pt); omit to evaluate "
                         "every checkpoint/{MODEL}_*.pt")

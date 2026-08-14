@@ -21,7 +21,7 @@
 
 set -euo pipefail
 
-CONDA_ENV="${CONDA_ENV:-KC2}"    # <-- EDIT: 본인 conda/mamba 환경 이름
+CONDA_ENV="${CONDA_ENV:-HHC}"    # <-- EDIT: 본인 conda/mamba 환경 이름
                                  #     (또는 CONDA_ENV=이름 sbatch train.sbatch 로 덮어쓰기)
 source "$(conda info --base)/etc/profile.d/conda.sh"
 conda activate "$CONDA_ENV"
