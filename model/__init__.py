@@ -16,6 +16,14 @@ MODEL_REGISTRY = {
 }
 MODEL_NAMES = sorted(MODEL_REGISTRY)
 
+# per-code model-facing constants: number of per-qubit label bits and the
+# (H, W) of the syndrome tensor planes. Both decoder classes accept
+# code=... and read these (the heavy-hex values are their defaults).
+CODE_SPECS = {
+    "heavyhex": {"num_qubits": 17, "grid": (4, 5)},
+    "surface": {"num_qubits": 9, "grid": (4, 4)},
+}
+
 
 def get_model_module(model_name, use_solution=False):
     """Import and return the skeleton (or solution) module of a model."""

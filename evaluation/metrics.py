@@ -42,6 +42,17 @@ from heavyhex_circuits.heavyhex_37q import DATA_PHYS, LOGICAL_Z  # noqa: E402
 LOGICAL_Z_DATA_IDX = [DATA_PHYS.index(p) for p in LOGICAL_Z]
 
 
+def logical_qubit_indices(code="heavyhex"):
+    """Indices of the logical-Z data qubits in the per-qubit label vector
+    of the given code (derived from the code definitions)."""
+    if code == "heavyhex":
+        return LOGICAL_Z_DATA_IDX
+    if code == "surface":
+        from rsc_circuits.rsc3 import LOGICAL_Z_IDX
+        return LOGICAL_Z_IDX
+    raise ValueError(f"unknown code '{code}'")
+
+
 def ecr(logits, labels):
     """ECR (diagnostic, sim-only). logits: (N,17) real logits,
     labels: (N,17) 0/1.
@@ -82,7 +93,8 @@ def ler_from_logits(logical_logits, true_logical):
     return ler(np.asarray(logical_logits).ravel() > 0, true_logical)
 
 
-def parity_ler_from_qubit_logits(qubit_logits, true_logical):
+def parity_ler_from_qubit_logits(qubit_logits, true_logical,
+                                 code="heavyhex"):
     """parity_LER (diagnostic): LER implied by the per-qubit head.
 
     pred_qubit_mask = (qubit_logits > 0); the predicted logical flip is
@@ -97,8 +109,10 @@ def parity_ler_from_qubit_logits(qubit_logits, true_logical):
     the per-qubit head is not really decoding: consider adjusting the aux
     loss weight (--aux-weight).
 
-    qubit_logits: (N,17) real logits from the per-qubit head
-    true_logical: (N,) 0/1 — actual logical flip (LOGICAL_Z parity)"""
+    qubit_logits: (N, num_qubits) real logits from the per-qubit head
+    true_logical: (N,) 0/1 — actual logical flip (LOGICAL_Z parity)
+    code:         selects the logical-Z data indices"""
     preds = (np.asarray(qubit_logits) > 0).astype(np.uint8)
-    parity = np.bitwise_xor.reduce(preds[:, LOGICAL_Z_DATA_IDX], axis=1)
+    parity = np.bitwise_xor.reduce(
+        preds[:, logical_qubit_indices(code)], axis=1)
     return ler(parity, true_logical)

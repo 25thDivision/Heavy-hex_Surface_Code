@@ -85,12 +85,66 @@ GNN 모델 자체는 순수 torch로 구현해 (torch_geometric 등 그래프 �
 
 ### 코드 축: `--code {heavyhex,surface}`
 
-- **heavyhex** (기본) — 이 저장소의 원래 (3,3) heavy-hex 코드.
-- **surface** — rotated surface code d=3 (P3 마일스톤에서 추가 예정;
-  그 전까지는 명시적 에러로 중단돼).
+- **heavyhex** (기본) — 이 저장소의 원래 (3,3) heavy-hex 코드 (17 data +
+  8 dual-use ancilla, QPU는 bridge 포함 37큐빗).
+- **surface** — rotated surface code d=3 (9 data + 8 ancilla = 17큐빗,
+  Z-stab 4 + X-stab 4). 아래 rsc3 섹션 참고.
 
 데이터셋은 `dataset/<code>/<노이즈태그>/...`에 저장되고, 결과/체크포인트
-태그에도 코드 이름이 들어가 (`CNN_heavyhex_...`).
+태그에도 코드 이름이 들어가 (`CNN_heavyhex_...`, `GNN_surface_...`).
+
+#### rotated surface code d=3 (rsc3) 규약
+
+코드 정의는 [rsc_circuits/rsc3.py](rsc_circuits/rsc3.py)에 있어:
+
+- **격자**: data는 odd-odd 좌표 (x,y)∈{1,3,5}², ancilla 8개는 plaquette
+  중심 (짝수 좌표). logical Z = **한 열(x=1)의 data 3개**
+  {(1,1),(1,3),(1,5)}, logical X = 한 행(y=1). 메모리-Z 프로토콜, 기본
+  cycles=3.
+- **CX 순서 (상수로 고정, hook-safe)**: 사이클마다 모든 stabilizer가 4개
+  공유 레이어에서 CX를 실행하고, 레이어별 코너는
+  `Z_CORNER_ORDER`("Z자": 아랫줄→윗줄) / `X_CORNER_ORDER`("N자":
+  왼쪽열→오른쪽열)를 따라. 이 조합에서 X-ancilla hook 에러의 잔여쌍은
+  **수직**(logical X 방향으로 진행 없음), Z-ancilla hook은 **수평**이라
+  한 번의 fault가 유효 distance를 깎지 않아. 스케줄은 레이어당 data 충돌
+  없음이 import 시점에 assert돼.
+- **no-reset ancilla + XOR chain**: 하드웨어 회로는 ancilla를 리셋하지
+  않고 `rsc3.check_values()`(per-ancilla XOR chain)로 check 값을 복원.
+  추상 Stim([dataset_generation/rsc3_stim.py](dataset_generation/rsc3_stim.py))은
+  MR을 쓰며 **check-value 수준 등가성** 규약이 heavyhex와 동일하게 적용돼.
+- **detector 규약** (heavyhex와 동일 구조): Z-check는 cycle 0부터
+  (|0⟩_L의 결정론적 0에 앵커), X-check는 cycle≥1 XOR, 마지막에 final-Z
+  detector 4개, observable = logical Z. 라벨은 FlipSimulator 측정 flip
+  (per-qubit 9비트).
+- **CNN 텐서**: `(2*cycles, 4, 4)` — ancilla 8개를 (d+1)×(d+1)=4×4
+  plaquette-꼭짓점 격자에 임베딩 (`rsc3.ANC_GRID`), 채널은 heavyhex와
+  동일한 [Z-plane, X-plane]×cycle.
+- **GNN**: P1의 detector-node 표현이 그대로 적용돼 (c=3 기준 노드 24개 =
+  Z 4×3 + X 4×2 + final-Z 4).
+- **게이트**: `python verification/verify_rsc3.py`가 ALL PASS여야
+  surface 데이터셋 생성/제출 가능 — Stim 결정론, 무노이즈 Aer 불변량,
+  단일 data 에러 서명 일치에 더해 **hook error 검사**(사이클 중간
+  ancilla 에러 주입 시 data 전파 서명이 CX 순서 규약의 예측 잔여쌍과
+  Stim/Aer 양쪽에서 비트 단위 일치)까지 확인해.
+
+#### ibm_miami 하드웨어 (surface)
+
+ibm_miami는 **12행×10열 row-major square lattice**(120큐빗, CZ basis)로
+확인됐고, rsc3는 **45도 임베딩**(u=(x+y)/2, v=(y−x)/2 + 오프셋, 5×5
+블록)으로 올라가 — 모든 stabilizer CX가 lattice-인접이라 **SWAP이 전혀
+삽입되지 않아** (dry-run 검증: 2Q 게이트 수 = CX 수 그대로 CZ 72개).
+임베딩 오프셋은 `rsc3.EMBED_OFFSETS`, 검증은
+`rsc3.validate_backend_surface`가 담당하고, coupling map이 예상(square
+lattice)과 다르면 에러로 중단돼.
+
+```bash
+python hardware/run_hw.py submit --backend ibm_miami --code surface --dry-run
+python hardware/run_hw.py submit --backend ibm_miami --code surface   # 실제 제출
+python hardware/run_hw.py analyze --job-id <ID>    # code는 job.json에서 자동 인식
+```
+
+analyze는 job.json의 code를 자동으로 읽어 rsc3용 check-value 복원 /
+4×4 텐서화 / MWPM / 체크포인트({MODEL}_surface_*.pt) 분기를 태워.
 
 **기존 산출물 이관**: 코드 축 도입 전에 만든 로컬 데이터셋은
 `dataset/<노이즈태그>/`에 바로 있었어. 아래 한 줄로 heavyhex 산하로 옮기면 돼
@@ -184,6 +238,35 @@ python train.py --model gnn -n qpu/<이름> -p 0.005 --mwpm
   에러 — H는 sx 프록시 1회의 depolarizing으로 근사돼. QPU 실측과의
   잔차는 이 항목들에서 나온다고 보면 돼.
 
+### 최종 비교표 산출 방법 (MWPM | CNN/GNN × Stim | CNN/GNN × QPU-cal)
+
+한 코드(예: heavyhex)에 대해 세 축을 같은 지표(head-LER,
+`LER/MWPM ratio`)로 모으는 절차:
+
+```bash
+# 1) [시뮬레이션 축] 표준 노이즈 프로파일 데이터셋에서 CNN/GNN + MWPM
+#    -> 스윕 한 번으로 model 컬럼이 있는 통합 표가 나온다
+cat > train_sweep.json <<'JSON'
+{"defaults": {"noise": "realistic/dp0.001_mf0.01_rf0.01_gd0.008",
+              "rates": [0.005], "mwpm": true},
+ "runs": [{"model": "cnn"}, {"model": "gnn"}]}
+JSON
+python dataset_generation/make_dataset.py && python train.py
+
+# 2) [QPU-cal 축] 캘리브레이션 평균 프로파일 데이터셋에서 같은 스윕
+#    (사전에 make_qpu_avg_profile.py로 qpu/<이름> 등록, 게이트 ALL PASS)
+#    train_sweep.json의 noise만 qpu/<이름>으로 바꿔 반복
+# 3) [실기기 축(선택)] run_hw.py analyze가 raw/MWPM/CNN/GNN을 한 표로 출력
+python hardware/run_hw.py analyze --job-id <ID>              # CNN 체크포인트들
+python hardware/run_hw.py analyze --job-id <ID> --model gnn  # GNN 체크포인트들
+```
+
+각 실행의 summary 표(모델·noise·p별 best epoch의 ler / mwpm_ler /
+LER/MWPM ratio)를 세로로 이어 붙이면 MWPM 기준선 대비 CNN/GNN ×
+{Stim 프로파일, QPU-cal 프로파일, (가능하면) 실기기}의 최종 비교표가 돼.
+surface 코드도 `--code surface`로 동일하게 반복하면 된다 (단, qpu-cal
+프로파일은 현재 heavyhex 전용).
+
 ## 2. 환경 설정
 
 ```bash
@@ -199,7 +282,8 @@ pip install -r requirements.txt
 
 ```bash
 # 0) 규약 게이트 — "ALL PASS" 확인하고 나서 데이터 생성으로 넘어가기
-python verification/verify_equivalence.py
+python verification/verify_equivalence.py   # heavyhex (+ qpu 프로파일 회로)
+python verification/verify_rsc3.py          # surface (rsc3, hook 검사 포함)
 
 # 1) 데이터셋 생성 (--code 기본값은 heavyhex)
 python dataset_generation/make_dataset.py --smoke   # 빠른 확인용
@@ -211,7 +295,8 @@ python dataset_generation/make_dataset.py -n realistic/dp0.001_mf0.01_rf0.01_gd0
 
 # 2) 모델 학습 (채우기 전에는 NotImplementedError로 멈출 수 있음)
 python train.py --model cnn --smoke            # end-to-end 확인
-python train.py --model gnn --smoke            # GNN (P1 이후)
+python train.py --model gnn --smoke            # GNN
+python train.py --model cnn --code surface --smoke   # rotated surface d=3
 python train.py --model cnn -n realistic/dp0.001_mf0.01_rf0.01_gd0.008 -p 0.005 --mwpm
 python train.py --all --mwpm                   # 전체 그리드 + 기준선 표
 python train.py                                # train_sweep.json 있으면 자동 스윕
@@ -327,7 +412,7 @@ sbatch 스크립트는 repo 루트에 두 개 있어 (파티션은 서버의 `ma
 ```bash
 # 학습만 (데이터셋이 이미 있을 때)
 sbatch train.sbatch --all --mwpm            # 인자는 train.py로 그대로 전달돼
-sbatch train.sbatch --model gnn --all       # GNN 학습 (P1 이후)
+sbatch train.sbatch --model gnn --all       # GNN 학습
 
 # 통합 파이프라인: 규약 게이트 -> 데이터셋 생성 -> 학습 -> QPU 검증
 sbatch pipeline.sbatch --all --mwpm
@@ -364,11 +449,17 @@ heavyhex_circuits/      고정된 회로 자산 (재작성하지 말고 import�
                                   두 파일이 더 최적화돼 있으니 그쪽을 쓸 것
   fetch_coupling.py               백엔드 coupling map 추출 (가장 먼저 실행)
   dd_utils.py                     dynamical decoupling (기본 XX4)
-dataset_generation/     Stim 회로 생성기(heavyhex33_stim.py) +
-                        데이터셋 생성(make_dataset.py, --code 축)
-verification/           규약 게이트 스크립트 (§4)
+rsc_circuits/           rotated surface code d=3 정의 + 하드웨어 회로 +
+                        ibm_miami 45도 임베딩 (rsc3.py)
+dataset_generation/     Stim 회로 생성기(heavyhex33_stim.py, rsc3_stim.py,
+                        heavyhex37_qpu_stim.py) + 데이터셋 생성
+                        (make_dataset.py, --code 축) + QPU 프로파일 생성기
+                        (make_qpu_avg_profile.py)
+verification/           규약 게이트 스크립트 (§4) — verify_equivalence.py
+                        (heavyhex + qpu 회로), verify_rsc3.py (surface)
 model/                  채워야 할 파일 (cnn_skeleton.py, gnn_skeleton.py) +
-                        모델 레지스트리(__init__.py) + 데이터 로더(data.py)
+                        모델 레지스트리(__init__.py) + 데이터 로더(data.py) +
+                        GNN 그래프 인프라(graph.py)
 evaluation/             지표 — head-LER(목표 지표) + ECR/parity_LER(진단용)
 baseline/               MWPM (PyMatching) 기준선
 train.py                학습 진입점 (완성본, 수정할 필요 없어; --model/--code)

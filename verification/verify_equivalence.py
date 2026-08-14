@@ -176,34 +176,40 @@ def main():
 
     # (b) single-error signatures vs Aer (raw values -> XOR chain, like
     #     the Aer path), (c) deterministic detector-stream equality vs
-    #     the abstract 25q Stim circuit (incl. final-Z + observable)
+    #     the abstract 25q Stim circuit (incl. final-Z detectors).
+    #     Detectors are reconstructed from RAW measured values with
+    #     detectors_from_dataset (anchored to the |0>_L expectations) —
+    #     stim's own detector sampler cannot be used for injected-Pauli
+    #     checks, because it takes its reference from a noiseless run of
+    #     the same circuit and absorbs the explicit Pauli into it.
+    from dataset_generation.heavyhex33_stim import detectors_from_dataset
+
     def qpu_value_run(inject=None, shots=64):
         c = build_qpu_stim_circuit(CYCLES, inject=inject)
         raw = np.asarray(c.compile_sampler().sample(shots), dtype=np.uint8)
         syn, dat = split_stim_sample(raw, CYCLES)
-        return check_matrix_from_dict(check_values(syn, CYCLES), CYCLES)
+        return check_matrix_from_dict(check_values(syn, CYCLES), CYCLES), dat
 
-    def det_stream(circuit, shots=64):
-        """(deterministic?, first detector+observable row)"""
-        d = np.asarray(circuit.compile_detector_sampler().sample(
-            shots=shots, append_observables=True), dtype=np.uint8)
-        return bool((d == d[0]).all()), d[0]
+    def det_stream(mat, dat):
+        """(deterministic?, first reconstructed detector row)"""
+        det = detectors_from_dataset(mat, dat, CYCLES)
+        return bool((det == det[0]).all()), det[0]
 
     print("[E-b/c] 37q Stim vs Aer signatures / vs 25q Stim detector "
           "streams:")
     for pauli, dq in cases:
         inject = (pauli, dq, 0)
-        f_qpu = fired_at_cycle1(qpu_value_run(inject),
-                                np.ones(64))
+        q_mat, q_dat = qpu_value_run(inject)
+        f_qpu = fired_at_cycle1(q_mat, np.ones(q_mat.shape[0]))
         a_mat, _, a_w = aer_run(inject=inject)
         f_aer = fired_at_cycle1(a_mat, a_w)
         stabs = Z_STABS if pauli == "X" else X_STABS
         exp = sorted(n for n, s in stabs.items() if dq in s)
-        det25_ok, det25 = det_stream(build_stim_circuit(
-            CYCLES, "X", 0.0, "ideal/dp0_mf0_rf0_gd0", inject=inject))
-        det37_ok, det37 = det_stream(
-            build_qpu_stim_circuit(CYCLES, inject=inject))
-        stream_ok = det25_ok and det37_ok and np.array_equal(det25, det37)
+        _, s_syn, s_dat, _ = stim_run(inject=inject)
+        det25_ok, det25 = det_stream(s_syn, s_dat)   # MR values directly
+        det37_ok, det37 = det_stream(q_mat, q_dat)
+        stream_ok = (det25_ok and det37_ok and np.array_equal(det25, det37)
+                     and det25.any())                # must actually fire
         good = (f_qpu == f_aer == exp) and stream_ok
         ok &= good
         print(f"  {pauli} q{dq}: 37q={f_qpu} aer={f_aer} exp={exp} "

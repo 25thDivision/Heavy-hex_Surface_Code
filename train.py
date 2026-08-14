@@ -58,7 +58,8 @@ sys.path.insert(0, str(_ROOT))
 from dataset_generation import load_options  # noqa: E402
 from dataset_generation.heavyhex33_stim import (  # noqa: E402
     noise_tag, DISTANCE, ERROR_RATES, ERROR_TYPES, ALL_NOISE)
-from model import get_model_module, get_model_class, MODEL_NAMES  # noqa: E402
+from model import (  # noqa: E402
+    get_model_module, get_model_class, MODEL_NAMES, CODE_SPECS)
 from model.data import load_split, FastTensorDataLoader  # noqa: E402
 from evaluation.metrics import (  # noqa: E402
     ecr, bit_accuracy, ler_from_logits, parity_ler_from_qubit_logits)
@@ -159,7 +160,8 @@ def ensure_coupling_json(backend="ibm_yonsei"):
               f"training doesn't need it.")
 
 
-def evaluate(model, loader, mod, aux_weight, pos_weight, device):
+def evaluate(model, loader, mod, aux_weight, pos_weight, device,
+             code="heavyhex"):
     model.eval()
     q_logits, l_logits, y_qs, y_ls = [], [], [], []
     val_loss, nb, t_inf, n_inf = 0.0, 0, 0.0, 0
@@ -185,7 +187,7 @@ def evaluate(model, loader, mod, aux_weight, pos_weight, device):
         "ecr": ecr(q_logits, y_q),
         "acc": bit_accuracy(q_logits, y_q),
         "ler": ler_from_logits(l_logits, y_l),
-        "parity_ler": parity_ler_from_qubit_logits(q_logits, y_l),
+        "parity_ler": parity_ler_from_qubit_logits(q_logits, y_l, code),
         "raw_ler": float(y_l.mean()),
         "inf_ms": (t_inf / max(n_inf, 1)) * 1000,
     }
@@ -221,8 +223,11 @@ def train_one(args, mod, noise, p, et, device):
     val_loader = FastTensorDataLoader(Xva, yqva, ylva,
                                       batch_size=args.batch_size)
 
+    spec = CODE_SPECS[args.code]
     model_cls = get_model_class(args.model, args.solution)
-    model = model_cls(in_channels=2 * args.cycles).to(device)
+    model = model_cls(in_channels=2 * args.cycles,
+                      num_qubits=spec["num_qubits"],
+                      code=args.code).to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
     pos_weight = None
@@ -230,7 +235,7 @@ def train_one(args, mod, noise, p, et, device):
         w = (1.0 - p) / p
         if args.pos_weight == "sqrt":
             w = float(np.sqrt(w))
-        pos_weight = torch.full((17,), w, device=device)
+        pos_weight = torch.full((spec["num_qubits"],), w, device=device)
 
     # flat layout: results/train/CNN_heavyhex_d3_c3_p0.005_dp0.001_....csv
     # ({MODEL}_{code}_d..., d = code distance, c = number of QEC cycles;
@@ -281,7 +286,7 @@ def train_one(args, mod, noise, p, et, device):
             train_loss /= max(nb, 1)
 
             m = evaluate(model, val_loader, mod, args.aux_weight,
-                         pos_weight, device)
+                         pos_weight, device, args.code)
             ratio = mwpm_ratio(m["ler"], mwpm_ler)
             writer.writerow([epoch, f"{train_loss:.6f}",
                              f"{m['val_loss']:.6f}", f"{m['ecr']:.4f}",
@@ -336,9 +341,6 @@ def expand_config(args):
 
 def main():
     args = parse_args()
-    if args.code != "heavyhex":
-        sys.exit(f"--code {args.code}: not implemented yet — the rotated "
-                 f"surface code path arrives with the rsc3 milestone.")
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     run_list = expand_config(args) if args.config else [args]
 

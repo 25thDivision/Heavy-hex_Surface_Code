@@ -7,9 +7,12 @@ below — the rest of the pipeline (dataset generation, training loop,
 evaluation, MWPM baseline, hardware run) is already done and will run as
 soon as you finish this file.
 
-Input : (B, 2*num_cycles, 4, 5) uint8 syndrome tensor
-        - 4x5 diamond embedding of the 8 ancillas
-          (see dataset_generation/heavyhex33_stim.py, ANC_COORD)
+Input : (B, 2*num_cycles, H, W) uint8 syndrome tensor
+        - heavyhex: 4x5 diamond embedding of the 8 ancillas
+          (dataset_generation/heavyhex33_stim.py, ANC_COORD)
+        - surface (--code surface): 4x4 plaquette-vertex grid
+          (rsc_circuits/rsc3.py, ANC_GRID); the constructor's `code`
+          argument selects the grid via model.CODE_SPECS
         - channels alternate [Z-plane, X-plane] per cycle
           (default num_cycles=3 -> in_channels=6)
 Output: qubit_logits   (B, 17) — per-qubit X-error head
@@ -38,20 +41,24 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 NUM_QUBITS = 17
-GRID_H, GRID_W = 4, 5
+GRID_H, GRID_W = 4, 5           # heavy-hex diamond default
 
 
 class HeavyHexCNN(nn.Module):
     def __init__(self, in_channels=6, num_qubits=NUM_QUBITS,
-                 conv_channels=64, fc_dim=256, dropout=0.1):
+                 conv_channels=64, fc_dim=256, dropout=0.1,
+                 code="heavyhex"):
         super().__init__()
+        # provided: the tensor grid of the selected code (do not change)
+        from model import CODE_SPECS
+        grid_h, grid_w = CODE_SPECS[code]["grid"]
         # ------------------------------------------------------------------
         # TODO 1/3 — feature extractor
         # Build self.features: a stack of Conv2d(3x3, padding=1) blocks
         # (BatchNorm2d + ReLU after each conv). Input has `in_channels`
-        # channels; keep the 4x5 spatial size (no pooling).
-        # Also build self.shared: Flatten -> Linear(conv_channels*4*5,
-        # fc_dim) -> ReLU -> Dropout(dropout).
+        # channels; keep the grid_h x grid_w spatial size (no pooling).
+        # Also build self.shared: Flatten -> Linear(conv_channels*grid_h*
+        # grid_w, fc_dim) -> ReLU -> Dropout(dropout).
         # ------------------------------------------------------------------
         raise NotImplementedError("TODO: define the conv blocks")
 

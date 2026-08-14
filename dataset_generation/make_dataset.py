@@ -121,39 +121,62 @@ def sweep_combos(args):
             for n in noises for p in rates for et in etypes]
 
 
+def code_generator(code, noise, cycles, et, p):
+    """Per-code circuit + sampling/tensor functions.
+
+    Returns (circuit, sampler, tensor_fn, logical_fn, grid, num_data).
+    sampler returns (check-value matrix, final-data bits); qpu_avg
+    profiles route to the hardware-shaped 37q circuit (raw flips
+    XOR-chained back to check values)."""
+    if code == "surface":
+        if is_qpu_profile(noise):
+            raise ValueError("qpu_avg profiles are heavy-hex only for now")
+        from dataset_generation.rsc3_stim import (
+            build_rsc3_stim_circuit, sample_flips_rsc3,
+            syndrome_tensor_rsc3, logical_label_rsc3)
+        from rsc_circuits.rsc3 import GRID_SHAPE, NUM_DATA
+        return (build_rsc3_stim_circuit(cycles, et, p, noise),
+                sample_flips_rsc3, syndrome_tensor_rsc3,
+                logical_label_rsc3, GRID_SHAPE, NUM_DATA)
+    if is_qpu_profile(noise):
+        # calibration-averaged profile -> hardware-shaped 37q circuit
+        from dataset_generation.heavyhex37_qpu_stim import (
+            build_qpu_stim_circuit, sample_qpu_flips)
+        return (build_qpu_stim_circuit(cycles, et, p,
+                                       NOISE_PROFILES[noise]),
+                sample_qpu_flips, syndrome_tensor, logical_label,
+                (4, 5), 17)
+    return (build_stim_circuit(cycles, et, p, noise), sample_flips,
+            syndrome_tensor, logical_label, (4, 5), 17)
+
+
 def generate_split(circuit, num_cycles, total, seed, desc,
-                   sampler=sample_flips):
+                   sampler=sample_flips, tensor_fn=syndrome_tensor,
+                   logical_fn=logical_label, grid=(4, 5), num_data=17):
     """Sample `total` shots in CHUNK batches; return (features, labels, logical).
 
     Uses FlipSimulator flips: identical to measured values for every
     downstream quantity (Z-planes, X-plane XORs, detectors, logical
-    parity), while additionally providing well-defined per-qubit labels.
-    `sampler` returns (check-value matrix, final-data bits): the abstract
-    circuit's sample_flips, or heavyhex37_qpu_stim.sample_qpu_flips for
-    the hardware-shaped no-reset circuit (raw flips XOR-chained back to
-    check values)."""
-    feats = np.zeros((total, 2 * num_cycles, 4, 5), dtype=np.uint8)
-    labels = np.zeros((total, 17), dtype=np.uint8)
+    parity), while additionally providing well-defined per-qubit labels."""
+    feats = np.zeros((total, 2 * num_cycles, *grid), dtype=np.uint8)
+    labels = np.zeros((total, num_data), dtype=np.uint8)
     done, chunk_i = 0, 0
     t0 = time.time()
     while done < total:
         n = min(CHUNK, total - done)
         syn, dat = sampler(circuit, n, num_cycles,
                            seed=seed * 100003 + chunk_i)
-        feats[done:done + n] = syndrome_tensor(syn, num_cycles)
+        feats[done:done + n] = tensor_fn(syn, num_cycles)
         labels[done:done + n] = dat
         done += n
         chunk_i += 1
         print(f"      {desc}: {done:,}/{total:,} ({time.time() - t0:.1f}s)",
               flush=True)
-    return feats, labels, logical_label(labels)
+    return feats, labels, logical_fn(labels)
 
 
 def main():
     args = parse_args()
-    if args.code != "heavyhex":
-        sys.exit(f"--code {args.code}: not implemented yet — the rotated "
-                 f"surface code generator arrives with the rsc3 milestone.")
     combos = sweep_combos(args)
     n_train = 10_000 if args.smoke else args.train_samples
     n_test = 2_000 if args.smoke else args.test_samples
@@ -175,16 +198,8 @@ def main():
         # e.g. dataset/heavyhex/dp0.001_mf0.01_rf0.01_gd0.008/
         ndir = outdir / args.code / noise_tag(noise)
         ndir.mkdir(parents=True, exist_ok=True)
-        if is_qpu_profile(noise):
-            # calibration-averaged profile -> hardware-shaped 37q circuit
-            from dataset_generation.heavyhex37_qpu_stim import (
-                build_qpu_stim_circuit, sample_qpu_flips)
-            circuit = build_qpu_stim_circuit(cycles, et, p,
-                                             NOISE_PROFILES[noise])
-            sampler = sample_qpu_flips
-        else:
-            circuit = build_stim_circuit(cycles, et, p, noise)
-            sampler = sample_flips
+        (circuit, sampler, tensor_fn, logical_fn,
+         grid, num_data) = code_generator(args.code, noise, cycles, et, p)
         for split, n, seed_off in (("train", n_train, 0),
                                    ("test", n_test, 1)):
             fname = ndir / (f"{split}_d{DISTANCE}_c{cycles}"
@@ -198,7 +213,9 @@ def main():
             seed = args.seed * 1000 + hash((noise, p, et)) % 10007 + seed_off
             f, l, y = generate_split(circuit, cycles, n,
                                      seed & 0x7FFFFFFF, split,
-                                     sampler=sampler)
+                                     sampler=sampler, tensor_fn=tensor_fn,
+                                     logical_fn=logical_fn, grid=grid,
+                                     num_data=num_data)
             # atomic write: dump to a temp file, then rename. A
             # crashed/concurrent run can never leave a half-written
             # npz under the final name (the exists-skip above would
@@ -209,7 +226,7 @@ def main():
                     np.savez_compressed(
                         fh, features=f, labels=l, logical_labels=y,
                         num_cycles=cycles, noise_profile=noise,
-                        error_rate=p, error_type=et)
+                        error_rate=p, error_type=et, code=args.code)
                 tmp.replace(fname)
             finally:
                 tmp.unlink(missing_ok=True)

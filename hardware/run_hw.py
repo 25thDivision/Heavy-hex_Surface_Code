@@ -142,26 +142,33 @@ def cmd_submit(args):
     from qiskit import transpile, qpy
     from qiskit_ibm_runtime import SamplerV2
 
-    if args.code != "heavyhex":
-        sys.exit(f"--code {args.code}: not implemented yet — the rotated "
-                 f"surface code path arrives with the rsc3 milestone.")
     keys = load_keys()
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 1) coupling map + patch validation (must run before circuit building)
+    # 1) coupling map + patch validation (must run before circuit
+    #    building), then 2) the code's hardware circuit
     coupling_path = fetch(args.backend, token=keys["ibm_token"],
                           instance=keys["ibm_instance"], outdir=str(RUNS_DIR))
-    validate_backend(coupling_path)
-    print(f"backend '{args.backend}': 37q patch validated")
-
-    # 2) hardware circuit
-    qc = HeavyHex37QDepthOpt(args.cycles).build_circuit()
+    if args.code == "surface":
+        from rsc_circuits.rsc3 import (
+            RSC3Hardware, ALL_COORDS, embedding_for_surface,
+            validate_backend_surface)
+        validate_backend_surface(coupling_path)
+        print(f"backend '{args.backend}': rsc3 17q patch validated "
+              f"(45-degree embedding, no SWAPs)")
+        qc = RSC3Hardware(args.cycles).build_circuit()
+        layout = [embedding_for_surface(args.backend)[c]
+                  for c in ALL_COORDS]
+    else:
+        validate_backend(coupling_path)
+        print(f"backend '{args.backend}': 37q patch validated")
+        qc = HeavyHex37QDepthOpt(args.cycles).build_circuit()
+        layout = [embedding_for(args.backend)[p] for p in ALL_PHYS]
 
     # 3) transpile with the fixed physical layout (patch labels mapped to
     #    this backend's device qubits), then insert DD
     service = get_service(keys)
     backend = service.backend(args.backend)
-    layout = [embedding_for(args.backend)[p] for p in ALL_PHYS]
     tqc = transpile(qc, backend=backend, initial_layout=layout,
                     optimization_level=1)
     tqc = apply_dd(tqc, backend.target, sequence=args.dd)
@@ -262,15 +269,35 @@ def fetch_raw(args):
 
 
 def cmd_analyze(args):
+    # the run's code family: job.json wins (submit recorded it), else the
+    # --code / default heavyhex (offline --npz re-analysis)
+    code = getattr(args, "code", None) or "heavyhex"
+    if args.job_id:
+        meta_path = RUNS_DIR / args.job_id / "job.json"
+        if meta_path.exists():
+            code = json.load(open(meta_path)).get("code", code)
+
+    if code == "surface":
+        from rsc_circuits.rsc3 import (
+            check_values as cv_fn, N_CHECKS as n_checks, NUM_DATA as n_data)
+        from dataset_generation.rsc3_stim import (
+            check_matrix_from_dict_rsc3 as mat_fn,
+            syndrome_tensor_rsc3 as tensor_fn,
+            logical_label_rsc3 as logical_fn)
+    else:
+        cv_fn, n_checks, n_data = check_values, N_CHECKS, 17
+        mat_fn, tensor_fn, logical_fn = (check_matrix_from_dict,
+                                         syndrome_tensor, logical_label)
+
     syn, dat, cycles = fetch_raw(args)
     shots = syn.shape[0]
-    assert syn.shape[1] == N_CHECKS * cycles and dat.shape[1] == 17
-    print(f"shots={shots}, cycles={cycles}")
+    assert syn.shape[1] == n_checks * cycles and dat.shape[1] == n_data, \
+        f"raw shapes {syn.shape}/{dat.shape} do not match code '{code}'"
+    print(f"shots={shots}, cycles={cycles}, code={code}")
 
     # no-reset raw -> check values via per-ancilla XOR chains
-    vals = check_values(syn, cycles)
-    check_mat = check_matrix_from_dict(vals, cycles)
-    y_logical = logical_label(dat)
+    check_mat = mat_fn(cv_fn(syn, cycles), cycles)
+    y_logical = logical_fn(dat)
     raw_ler = float(y_logical.mean())
 
     # row = (decoder, LER, parity_LER (diagnostic) or None,
@@ -279,38 +306,43 @@ def cmd_analyze(args):
 
     # MWPM baseline (DEM weights from the reference noise profile)
     from baseline.mwpm import build_matching, mwpm_ler_from_hardware
-    matching = build_matching(cycles, "X", args.mwpm_p, args.mwpm_profile)
-    mwpm_ler = mwpm_ler_from_hardware(check_mat, dat, cycles, matching)
+    matching = build_matching(cycles, "X", args.mwpm_p, args.mwpm_profile,
+                              code)
+    mwpm_ler = mwpm_ler_from_hardware(check_mat, dat, cycles, matching,
+                                      code)
     rows.append(("MWPM", mwpm_ler, None, None))
 
-    # model head: a single --ckpt, or every checkpoint/{MODEL}_*.pt if
-    # none was given (the {MODEL} prefix keeps cnn/gnn checkpoints apart)
+    # model head: a single --ckpt, or every matching checkpoint if none
+    # was given ({MODEL} prefix keeps cnn/gnn apart; surface checkpoints
+    # carry the "_surface_" tag, legacy heavyhex names carry no code tag)
     model_ul = args.model.upper()
     if args.ckpt:
         ckpts = [Path(args.ckpt)]
     else:
-        ckpts = sorted((_ROOT / "checkpoint").glob(f"{model_ul}_*.pt"))
+        ckpts = sorted(p for p in (_ROOT / "checkpoint").glob(
+            f"{model_ul}_*.pt")
+            if ("_surface_" in p.name) == (code == "surface"))
         if not ckpts:
-            print(f"(no --ckpt and no checkpoint/{model_ul}_*.pt: "
-                  f"skipping {model_ul})")
+            print(f"(no --ckpt and no checkpoint/{model_ul}_*.pt for "
+                  f"code '{code}': skipping {model_ul})")
     if ckpts:
         import torch
-        from model import get_model_module, get_model_class
+        from model import get_model_module, get_model_class, CODE_SPECS
         mod = get_model_module(args.model, args.solution)
         model_cls = get_model_class(args.model, args.solution)
         from evaluation.metrics import ler, parity_ler_from_qubit_logits
-        tensor = syndrome_tensor(check_mat, cycles)
+        tensor = tensor_fn(check_mat, cycles)
         # model-specific input prep (e.g. the GNN appends the final-Z
         # detector channel, computed from the measured final data bits —
         # the hardware counterpart of the simulation labels)
         if hasattr(mod, "prepare_features"):
-            tensor = np.asarray(
-                mod.prepare_features(tensor, dat, getattr(args, "code",
-                                                          "heavyhex")))
+            tensor = np.asarray(mod.prepare_features(tensor, dat, code))
         for ckpt_path in ckpts:
             ckpt = torch.load(ckpt_path, map_location="cpu",
                               weights_only=False)
-            model = model_cls(in_channels=2 * cycles)
+            model = model_cls(in_channels=2 * cycles,
+                              num_qubits=CODE_SPECS[code]["num_qubits"],
+                              code=code)
             model.load_state_dict(ckpt["model_state_dict"])
             model.eval()
             preds, q_logits = [], []
@@ -323,7 +355,7 @@ def cmd_analyze(args):
             pred = np.concatenate(preds)
             model_ler = ler(pred, y_logical)
             parity_ler = parity_ler_from_qubit_logits(
-                np.concatenate(q_logits), y_logical)
+                np.concatenate(q_logits), y_logical, code)
             ratio = model_ler / mwpm_ler if mwpm_ler else None
             rows.append((f"{model_ul} ({ckpt_path.name})", model_ler,
                          parity_ler, ratio))
@@ -378,9 +410,13 @@ def _submit_opts(p):
 
 
 def _analyze_opts(p, cycles=True):
-    if cycles:
+    if cycles:   # standalone analyze parser ('all' inherits submit's)
         p.add_argument("--cycles", type=int, default=3,
                        help="fallback if job metadata is missing")
+        p.add_argument("--code", choices=["heavyhex", "surface"],
+                       default=None,
+                       help="fallback if job metadata is missing "
+                            "(e.g. offline --npz re-analysis)")
     p.add_argument("--model", choices=["cnn", "gnn"], default="cnn",
                    help="decoder architecture used for --ckpt loading; "
                         "without --ckpt, evaluates checkpoint/{MODEL}_*.pt")
