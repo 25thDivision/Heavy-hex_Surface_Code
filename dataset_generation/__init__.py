@@ -13,10 +13,12 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parents[1]
 
 # keys allowed in a run entry (train.py consumes the full set;
-# make_dataset.py only reads noise / rates / error_types / cycles)
+# make_dataset.py only reads noise / rates / error_types / cycles).
+# "model" lets one sweep train cnn and gnn runs on the same data, so the
+# summary prints a combined CNN/GNN/MWPM table.
 SWEEP_KEYS = {"noise", "rates", "error_types", "cycles", "epochs",
               "patience", "batch_size", "lr", "aux_weight", "pos_weight",
-              "mwpm", "name"}
+              "mwpm", "name", "model"}
 _LIST_KEYS = ("noise", "rates", "error_types")
 
 

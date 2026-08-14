@@ -209,6 +209,11 @@ def train_one(args, mod, noise, p, et, device):
                                  args.cycles, p, et, device)
     Xva, yqva, ylva = load_split(args.data_dir, args.code, noise, "test",
                                  args.cycles, p, et, device)
+    # model-specific input prep (e.g. the GNN appends the final-Z
+    # detector channel from the final bits — see model/graph.py)
+    if hasattr(mod, "prepare_features"):
+        Xtr = mod.prepare_features(Xtr, yqtr, args.code)
+        Xva = mod.prepare_features(Xva, yqva, args.code)
     print(f"    train {tuple(Xtr.shape)}  val {tuple(Xva.shape)}  -> {device}")
 
     train_loader = FastTensorDataLoader(Xtr, yqtr, yltr,
@@ -308,7 +313,7 @@ def train_one(args, mod, noise, p, et, device):
                     print("    -> early stopping")
                     break
 
-    row = {"noise": noise, "p": p, "type": et, **best,
+    row = {"model": args.model, "noise": noise, "p": p, "type": et, **best,
            "raw_ler": m["raw_ler"]}
     if mwpm_ler is not None:
         row["mwpm_ler"] = mwpm_ler
@@ -345,6 +350,9 @@ def main():
 
     rows = []
     for ra in run_list:
+        # sweep entries may override the model per run ("model" key), so
+        # resolve the module per entry (importlib caches repeats)
+        mod = get_model_module(ra.model, ra.solution)
         noises = ra.noise or (ALL_NOISE if ra.all else [ALL_NOISE[0]])
         rates = ra.rates or (ERROR_RATES if (ra.all or not ra.smoke)
                              else [ERROR_RATES[0]])
@@ -369,7 +377,8 @@ def main():
     if rows:
         print(f"\n{'=' * 70}\nSummary (best epoch per config; official "
               f"metric = head-LER, 'ler' column)")
-        cols = [("noise", "noise"), ("p", "p"), ("type", "type"),
+        cols = [("model", "model"),
+                ("noise", "noise"), ("p", "p"), ("type", "type"),
                 ("epoch", "epoch"),
                 ("ecr", "ECR (diagnostic, sim-only)"),
                 ("acc", "acc"), ("raw_ler", "raw_ler"), ("ler", "ler"),

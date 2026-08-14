@@ -40,14 +40,48 @@ model/gnn_skeleton.py)의 모델만 비어 있어.** 이 파일만 채우면 아
 
 - **cnn** — 4×5 다이아몬드 격자 텐서를 그대로 받는 dual-head CNN
   ([model/cnn_skeleton.py](model/cnn_skeleton.py)).
-- **gnn** — detector를 노드로 하는 그래프 신경망 (model/gnn_skeleton.py,
-  P1 마일스톤에서 추가). 입력 텐서는 CNN과 동일하고 모델 내부에서
-  그래프로 변환하므로 **데이터셋 파일은 공용**이야.
+- **gnn** — detector를 노드로 하는 그래프 신경망
+  ([model/gnn_skeleton.py](model/gnn_skeleton.py)). **데이터셋 파일은 CNN과
+  공용**이고 (npz 포맷 무변경), 그래프 변환은 모델 쪽에서 일어나.
 
 모델 로딩은 [model/__init__.py](model/__init__.py)의 레지스트리
 (`get_model_module(model_name, use_solution)`)로 일원화돼 있고, 결과/체크포인트
 파일 이름은 `{MODEL}_{tag}` 형식이야 (예: `CNN_heavyhex_d3_c3_...`,
-`GNN_heavyhex_d3_c3_...`).
+`GNN_heavyhex_d3_c3_...`). train_sweep.json의 run 항목에 `"model"` 키를 주면
+한 스윕에서 cnn/gnn을 같은 데이터로 이어 학습해 **CNN/GNN/MWPM이 한 표에**
+나오는 요약을 얻을 수 있어.
+
+#### GNN 그래프 표현 (그리고 CNN과의 입력 비대칭)
+
+[model/graph.py](model/graph.py)의 `GraphBuilder`가 (code, cycles)별 정적
+그래프를 만들어:
+
+- **노드 = Stim detector**, 순서는 `heavyhex33_stim._append_detectors`와
+  동일 (MWPM이 소비하는 순서 그대로). c=3 기준 48개:
+  Z-check 8×3, X-check 8×2, **final-Z 8**.
+- **노드 피처**: [detector 값, check 타입 one-hot(Z/X/final),
+  cycle 정규화(final=1.0), ANC_COORD 기반 (row,col) 정규화 좌표].
+- **엣지 (정적, (code, cycles)별 사전 계산)**:
+  공간(같은 cycle에서 두 check가 data 큐빗 공유),
+  시간(같은 check의 인접 cycle),
+  final-Z(final-Z 노드끼리 support 공유 + 자신의 마지막 cycle Z-check).
+- **입력 증강**: final-Z detector 값(= final-data Z-support parity ^ 마지막
+  cycle Z-check)은 `(2C,4,5)` 텐서에 없는 정보라, `--model gnn`일 때
+  train.py / run_hw.py가 `augment_features`로 **채널 1개를 추가**한
+  `(B, 2C+1, 4, 5)` 텐서를 만들어 forward에 넘겨줘 (시뮬레이션은 npz의
+  `labels`(측정 flip)에서, 하드웨어는 측정된 final data 비트에서 계산 —
+  둘 다 MWPM의 detector 재구성과 비트 단위로 동일).
+
+**final-Z 노드는 라벨 누출이 아니야**: final-Z detector는 final 측정의
+Z-stabilizer parity이고, logical Z(data [69,87,105])는 Z-stabilizer 곱으로
+표현될 수 없어서 목표 지표(head-LER)의 라벨이 유도되지 않아. MWPM이 쓰는
+입력과 정확히 같은 정보야. 다만 **CNN 텐서에는 final-data 유도 신드롬이
+없으므로 CNN과 GNN의 입력은 비대칭**이고, CNN/GNN 비교를 읽을 때 이 차이를
+감안해야 해 (CNN은 in-run 신드롬만, GNN은 in-run + final-round 신드롬).
+
+GNN 모델 자체는 순수 torch로 구현해 (torch_geometric 등 그래프 라이브러리
+금지) — 노드 수가 작아서 dense adjacency matmul(`self.adj @ h`) 기반 MPNN
+3~4층 + pooling + shared FC → dual head면 충분해.
 
 ### 코드 축: `--code {heavyhex,surface}`
 

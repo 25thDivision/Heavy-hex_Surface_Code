@@ -295,10 +295,18 @@ def cmd_analyze(args):
                   f"skipping {model_ul})")
     if ckpts:
         import torch
-        from model import get_model_class
+        from model import get_model_module, get_model_class
+        mod = get_model_module(args.model, args.solution)
         model_cls = get_model_class(args.model, args.solution)
         from evaluation.metrics import ler, parity_ler_from_qubit_logits
         tensor = syndrome_tensor(check_mat, cycles)
+        # model-specific input prep (e.g. the GNN appends the final-Z
+        # detector channel, computed from the measured final data bits —
+        # the hardware counterpart of the simulation labels)
+        if hasattr(mod, "prepare_features"):
+            tensor = np.asarray(
+                mod.prepare_features(tensor, dat, getattr(args, "code",
+                                                          "heavyhex")))
         for ckpt_path in ckpts:
             ckpt = torch.load(ckpt_path, map_location="cpu",
                               weights_only=False)
