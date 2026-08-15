@@ -328,7 +328,13 @@ def train_one(args, mod, noise, p, et, device):
 
 
 def expand_config(args):
-    """--config JSON -> one args namespace per run entry."""
+    """--config JSON -> one args namespace per run entry.
+
+    A sweep run that omits "noise" trains the FULL noise grid — the same
+    expansion make_dataset.py uses for the sweep — so one pipeline pass
+    generates and trains identical combos. (Explicit -n / run "noise"
+    keys still narrow it; without a sweep the plain-CLI default remains
+    the first profile unless --all.)"""
     from dataset_generation import load_sweep
     run_list = []
     for run in load_sweep(args.config):
@@ -336,6 +342,8 @@ def expand_config(args):
         ra.run_name = run.pop("name", "")
         for k, v in run.items():
             setattr(ra, k, v)
+        if not ra.noise:
+            ra.noise = list(ALL_NOISE)
         run_list.append(ra)
     return run_list
 
