@@ -361,6 +361,11 @@ CSV는 append, patience는 세션마다 새로 시작해 early stopping이 다�
   하이퍼파라미터(epochs, batch_size, lr, ...), 데이터셋 샘플 수
   (train_samples/test_samples), `cycles`는 양쪽 공용. train.py /
   make_dataset.py가 자동으로 읽고, CLI 인자를 명시하면 그쪽이 이겨.
+- **`pipeline`** — 파이프라인 고정 설정: `conda_env`, `codes`,
+  `backends`(코드→QPU 백엔드), `qpu_runs`(루프당 제출 수), `shots`,
+  `train_args`(train.py에 항상 붙는 인자, 기본 "--mwpm --solution").
+  sbatch 환경변수를 외울 필요 없게 여기에 모아뒀어 (남은 변수는
+  LOOPS/SMOKE 둘뿐).
 - **`sweep`** — *스윕* 정의: `runs`의 각 항목이 (노이즈, p, error_type,
   model + 하이퍼파라미터 오버라이드) 한 벌이야. **기본 sweep이 들어
   있어** — cnn/gnn 두 run(+mwpm)이라, 인자 없이 돌리면 같은 데이터로 두
@@ -456,14 +461,17 @@ sbatch 스크립트는 repo 루트에 두 개 있어 (파티션은 서버의 `ma
 sbatch train.sbatch --all --mwpm            # 인자는 train.py로 그대로 전달돼
 sbatch train.sbatch --model gnn --all       # GNN 학습
 
-# 통합 파이프라인: 게이트 -> [QPU 프로파일] -> 데이터셋 -> 학습 -> QPU 검증
-sbatch pipeline.sbatch --mwpm --solution
-LOOPS=5 sbatch pipeline.sbatch --mwpm --solution   # 파이프라인 5루프 반복:
-#   루프마다 QPU 이력 최신 5개(QPU_RUNS)를 평균한 qpu 프로파일을 만들어
-#   realistic 그리드에 더해 학습하고, 코드별로 QPU를 5회 제출·분석 ->
-#   그 런들이 다음 루프의 평균 입력이 된다 (루프 단위로 자기 재제출).
-#   첫 루프는 이력이 없어 realistic만 학습하고 QPU 5회를 돌린다.
-sbatch pipeline.sbatch --all --mwpm
+# 통합 파이프라인: 게이트 -> [QPU 프로파일] -> 데이터셋 -> 학습 -> QPU 검증.
+# 고정 설정(환경 이름/코드/백엔드/샷/qpu 횟수/train 인자)은 전부
+# config.json의 "pipeline" 섹션에 있고, sbatch 변수는 둘뿐이야:
+LOOPS=5 sbatch pipeline.sbatch     # 실전: 파이프라인 5루프 반복 —
+#   루프마다 QPU 이력 최신 qpu_runs개를 평균한 qpu 프로파일을 만들어
+#   realistic 그리드에 더해 학습(epoch-resume 이어서)하고, 코드별로 QPU를
+#   qpu_runs회 제출·분석 -> 그 런들이 다음 루프의 평균 입력 (자기 재제출).
+#   첫 루프는 이력이 없으면 realistic만 학습. qpu 프로파일이 있는 루프는
+#   하드웨어 MWPM 기준선(DEM 가중치)도 그 프로파일을 자동으로 쓴다.
+sbatch pipeline.sbatch             # 1회만
+SMOKE=1 sbatch pipeline.sbatch     # 리허설: 스모크 데이터/학습 + QPU dry-run
 DATASET_ARGS="--smoke" sbatch pipeline.sbatch --smoke   # 빠른 end-to-end 확인
 # config.json에 sweep 섹션이 있으면 데이터셋 생성+학습이 자동으로 스윕을 돈다:
 SWEEP_CONFIG=다른스윕.json sbatch pipeline.sbatch       # 별도 스윕 파일 지정

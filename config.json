@@ -58,5 +58,19 @@
       "reset_flip": 0.5,
       "gate_depol": 0.1
     }
+  },
+  "pipeline": {
+    "conda_env": "HHC",
+    "codes": [
+      "heavyhex",
+      "surface"
+    ],
+    "backends": {
+      "heavyhex": "ibm_boston",
+      "surface": "ibm_miami"
+    },
+    "qpu_runs": 5,
+    "shots": 50000,
+    "train_args": "--mwpm --solution"
   }
 }
