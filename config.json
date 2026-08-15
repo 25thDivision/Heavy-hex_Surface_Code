@@ -71,6 +71,6 @@
     },
     "qpu_runs": 5,
     "shots": 50000,
-    "train_args": "--mwpm --solution"
+    "train_args": "--mwpm"
   }
 }
