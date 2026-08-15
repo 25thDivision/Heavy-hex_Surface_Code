@@ -112,6 +112,10 @@ def parse_args():
                          "(not part of the distributed repo)")
     ap.add_argument("--smoke", action="store_true",
                     help="single config, 3 epochs, tiny batch count")
+    ap.add_argument("--fresh", action="store_true",
+                    help="ignore <tag>.resume.pt and start training from "
+                         "scratch (default: resume — continue the global "
+                         "epoch count until early stopping triggers again)")
     ap.add_argument("--config", default=None,
                     help="sweep-config JSON: loop training over its run "
                          "entries. Defaults to config.json's sweep "
@@ -251,6 +255,29 @@ def train_one(args, mod, noise, p, et, device):
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     csv_path = result_dir / f"{prefix}_{tag}.csv"
     ckpt_path = ckpt_dir / f"{prefix}_{tag}.pt"
+    resume_path = ckpt_dir / f"{prefix}_{tag}.resume.pt"
+
+    # ---- epoch-level resume ------------------------------------------
+    # <tag>.resume.pt carries the full training state (model+optimizer,
+    # cumulative epoch count, global best record). When it exists the run
+    # CONTINUES: epoch numbers are global across sessions and the CSV is
+    # appended. Patience starts FRESH each session, so a re-run keeps
+    # training until early stopping triggers again (session budget =
+    # --epochs). --fresh starts over from scratch.
+    best = {"ler": float("inf"), "ecr": 0.0, "acc": 0.0,
+            "parity_ler": float("nan"), "epoch": 0}
+    start_epoch, patience, resumed = 0, 0, False
+    if resume_path.exists() and not args.fresh:
+        state = torch.load(resume_path, map_location=device,
+                           weights_only=False)
+        model.load_state_dict(state["model_state_dict"])
+        optimizer.load_state_dict(state["optimizer_state_dict"])
+        start_epoch = state["total_epochs"]
+        best = state["best"]
+        resumed = True
+        print(f"    resume: {start_epoch} epochs done, best LER "
+              f"{best['ler']:.4f} @ ep {best['epoch']} — continuing until "
+              f"early stopping triggers again")
 
     # MWPM baseline on the same val data (once, before the loop) so every
     # evaluation report can carry the LER/MWPM ratio column
@@ -263,16 +290,18 @@ def train_one(args, mod, noise, p, et, device):
                      args.cycles, p, et))
         print(f"    MWPM baseline LER (val data): {mwpm_ler:.4f}")
 
-    best = {"ler": float("inf"), "ecr": 0.0, "acc": 0.0,
-            "parity_ler": float("nan"), "epoch": 0}
-    patience = 0
-    with open(csv_path, "w", newline="") as f:
+    gepoch = start_epoch                     # last executed global epoch
+    m = None
+    append = resumed and csv_path.exists()
+    with open(csv_path, "a" if append else "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["Epoch", "Train_Loss", "Val_Loss",
-                         "Val_ECR (diagnostic, sim-only)", "Val_Acc",
-                         "Val_LER", "Val_parity_LER (diagnostic)",
-                         "Raw_LER", "LER/MWPM ratio", "Inference_ms"])
-        for epoch in range(1, args.epochs + 1):
+        if not append:
+            writer.writerow(["Epoch", "Train_Loss", "Val_Loss",
+                             "Val_ECR (diagnostic, sim-only)", "Val_Acc",
+                             "Val_LER", "Val_parity_LER (diagnostic)",
+                             "Raw_LER", "LER/MWPM ratio", "Inference_ms"])
+        for epoch in range(start_epoch + 1, start_epoch + args.epochs + 1):
+            gepoch = epoch
             model.train()
             train_loss, nb = 0.0, 0
             for xb, yq, yl in train_loader:
@@ -309,18 +338,32 @@ def train_one(args, mod, noise, p, et, device):
                         "parity_ler": m["parity_ler"], "epoch": epoch}
                 patience = 0
                 torch.save({"model_state_dict": model.state_dict(),
-                            "epoch": epoch, "val_ler": m["ler"],
+                            "epoch": epoch, "best_epoch": epoch,
+                            "total_epochs": epoch, "val_ler": m["ler"],
                             "val_ecr": m["ecr"], "config": vars(args),
                             "noise": noise, "p": p, "error_type": et},
                            ckpt_path)
             else:
                 patience += 1
-                if patience >= args.patience:
-                    print("    -> early stopping")
-                    break
+            # training state for the next session (resume)
+            torch.save({"model_state_dict": model.state_dict(),
+                        "optimizer_state_dict": optimizer.state_dict(),
+                        "total_epochs": epoch, "best": best}, resume_path)
+            if patience >= args.patience:
+                print("    -> early stopping")
+                break
 
+    # keep the best checkpoint's cumulative-epoch count current so the
+    # reports can show "weight from epoch <best> out of <total> trained"
+    if ckpt_path.exists() and gepoch > start_epoch:
+        ck = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+        ck["total_epochs"] = gepoch
+        torch.save(ck, ckpt_path)
+
+    raw_val = (m["raw_ler"] if m is not None
+               else float(ylva.float().mean().item()))
     row = {"model": args.model, "noise": noise, "p": p, "type": et, **best,
-           "raw_ler": m["raw_ler"]}
+           "raw_ler": raw_val, "total_epochs": gepoch}
     if mwpm_ler is not None:
         row["mwpm_ler"] = mwpm_ler
     row["ler_mwpm_ratio"] = mwpm_ratio(best["ler"], mwpm_ler)
@@ -390,7 +433,7 @@ def main():
               f"metric = head-LER, 'ler' column)")
         cols = [("model", "model"),
                 ("noise", "noise"), ("p", "p"), ("type", "type"),
-                ("epoch", "epoch"),
+                ("epoch", "best_ep"), ("total_epochs", "total_ep"),
                 ("ecr", "ECR (diagnostic, sim-only)"),
                 ("acc", "acc"), ("raw_ler", "raw_ler"), ("ler", "ler"),
                 ("parity_ler", "parity_LER (diagnostic)")]

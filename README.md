@@ -337,6 +337,13 @@ python hardware/run_hw.py all                     # 제출→완료 대기→분
 ```
 
 analyze는 잡이 아직 안 끝났으면 알아서 폴링하며 기다렸다가 진행해.
+학습은 **epoch-resume**이 기본이야: 같은 (model, code, noise, p) 조합을
+다시 돌리면 `<tag>.resume.pt`에서 이어서 학습하고 (epoch 번호는 전역,
+CSV는 append, patience는 세션마다 새로 시작해 early stopping이 다시
+발동할 때까지 진행), `--fresh`로 처음부터 다시 학습할 수 있어.
+체크포인트에는 `best_epoch`(저장된 weight의 epoch)와 `total_epochs`
+(누적 학습 epoch)가 기록되고, 학습 summary와 하드웨어 리포트 CSV에
+같은 컬럼이 표시돼.
 `--ckpt` 없이 돌리면 해당 코드의 `checkpoint/*.pt`를 전부 평가하는데,
 각 파일의 아키텍처는 `CNN_`/`GNN_` **파일명 접두사로 자동 인식**돼서
 한 리포트에 두 모델 행이 함께 나와. `--model {cnn,gnn}`은 한
@@ -449,7 +456,13 @@ sbatch 스크립트는 repo 루트에 두 개 있어 (파티션은 서버의 `ma
 sbatch train.sbatch --all --mwpm            # 인자는 train.py로 그대로 전달돼
 sbatch train.sbatch --model gnn --all       # GNN 학습
 
-# 통합 파이프라인: 규약 게이트 -> 데이터셋 생성 -> 학습 -> QPU 검증
+# 통합 파이프라인: 게이트 -> [QPU 프로파일] -> 데이터셋 -> 학습 -> QPU 검증
+sbatch pipeline.sbatch --mwpm --solution
+LOOPS=5 sbatch pipeline.sbatch --mwpm --solution   # 파이프라인 5루프 반복:
+#   루프마다 QPU 이력 최신 5개(QPU_RUNS)를 평균한 qpu 프로파일을 만들어
+#   realistic 그리드에 더해 학습하고, 코드별로 QPU를 5회 제출·분석 ->
+#   그 런들이 다음 루프의 평균 입력이 된다 (루프 단위로 자기 재제출).
+#   첫 루프는 이력이 없어 realistic만 학습하고 QPU 5회를 돌린다.
 sbatch pipeline.sbatch --all --mwpm
 DATASET_ARGS="--smoke" sbatch pipeline.sbatch --smoke   # 빠른 end-to-end 확인
 # config.json에 sweep 섹션이 있으면 데이터셋 생성+학습이 자동으로 스윕을 돈다:

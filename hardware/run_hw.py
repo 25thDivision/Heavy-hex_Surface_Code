@@ -342,8 +342,9 @@ def cmd_analyze(args):
     raw_ler = float(y_logical.mean())
 
     # row = (decoder, LER, parity_LER (diagnostic) or None,
-    #        LER/MWPM ratio or None)
-    rows = [("raw (no decoding)", raw_ler, None, None)]
+    #        LER/MWPM ratio or None, best_epoch or None,
+    #        total_epochs or None)
+    rows = [("raw (no decoding)", raw_ler, None, None, None, None)]
 
     # MWPM baseline (DEM weights from the reference noise profile)
     from baseline.mwpm import build_matching, mwpm_ler_from_hardware
@@ -351,7 +352,7 @@ def cmd_analyze(args):
                               code)
     mwpm_ler = mwpm_ler_from_hardware(check_mat, dat, cycles, matching,
                                       code)
-    rows.append(("MWPM", mwpm_ler, None, None))
+    rows.append(("MWPM", mwpm_ler, None, None, None, None))
 
     # model head: a single --ckpt, or every matching checkpoint if none
     # was given. The architecture is INFERRED from the {MODEL}_ filename
@@ -371,6 +372,8 @@ def cmd_analyze(args):
     else:
         ckpts = []
         for p in sorted((_ROOT / "checkpoint").glob("*.pt")):
+            if p.name.endswith(".resume.pt"):
+                continue                    # training state, not a model
             mname = model_of(p)
             if mname is None:
                 print(f"(skipping {p.name}: unknown model prefix)")
@@ -423,16 +426,22 @@ def cmd_analyze(args):
             parity_ler = parity_ler_from_qubit_logits(
                 np.concatenate(q_logits), y_logical, code)
             ratio = model_ler / mwpm_ler if mwpm_ler else None
+            # "weight from epoch <best> out of <total> trained"
+            best_ep = ckpt.get("best_epoch", ckpt.get("epoch"))
+            total_ep = ckpt.get("total_epochs")
             rows.append((f"{mname.upper()} ({ckpt_path.name})", model_ler,
-                         parity_ler, ratio))
+                         parity_ler, ratio, best_ep, total_ep))
 
     def _fmt(v, spec=".4f"):
         return format(v, spec) if v is not None else "N/A"
 
     print(f"\n{'decoder':<55} {'LER':>8} "
-          f"{'parity_LER (diagnostic)':>24} {'LER/MWPM ratio':>15}")
-    for name, v, pl, ratio in rows:
-        print(f"{name:<55} {v:>8.4f} {_fmt(pl):>24} {_fmt(ratio):>15}")
+          f"{'parity_LER (diagnostic)':>24} {'LER/MWPM ratio':>15} "
+          f"{'best_ep':>8} {'total_ep':>9}")
+    for name, v, pl, ratio, be, te in rows:
+        print(f"{name:<55} {v:>8.4f} {_fmt(pl):>24} {_fmt(ratio):>15} "
+              f"{_fmt(be, 'd') if be is not None else 'N/A':>8} "
+              f"{_fmt(te, 'd') if te is not None else 'N/A':>9}")
 
     # persist the report next to the training results
     # report file: <backend>_<code>_<timestamp>.csv, timestamp = the
@@ -448,11 +457,13 @@ def cmd_analyze(args):
     with open(csv_path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["decoder", "ler", "parity_LER (diagnostic)",
-                    "LER/MWPM ratio", "shots", "cycles", "backend",
-                    "timestamp", "job_id"])
-        for name, v, pl, ratio in rows:
+                    "LER/MWPM ratio", "shots", "cycles", "best_epoch",
+                    "total_epochs", "backend", "timestamp", "job_id"])
+        for name, v, pl, ratio, be, te in rows:
             w.writerow([name, f"{v:.6f}", _fmt(pl, ".6f"),
                         _fmt(ratio, ".6f"), shots, cycles,
+                        be if be is not None else "",
+                        te if te is not None else "",
                         hw_backend or "unknown", submitted_at or ts,
                         job_id or ""])
     print(f"saved -> {csv_path}")

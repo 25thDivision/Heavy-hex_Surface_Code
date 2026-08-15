@@ -8,41 +8,38 @@
 #SBATCH --output=slurm_logs/%x-%j.out
 #SBATCH --error=slurm_logs/%x-%j.err
 
-# 통합 파이프라인: 규약 게이트 -> 데이터셋 생성 -> 학습 -> QPU 검증.
+# 통합 파이프라인: 규약 게이트 -> [QPU 프로파일] -> 데이터셋 -> 학습 -> QPU 검증.
 # 한 번의 제출로 두 코드 축을 순서대로 돈다:
 #   heavyhex -> ibm_boston  |  surface -> ibm_miami
 # 각 단계가 성공해야 다음 단계로 넘어간다 (set -e).
-# 이미 생성된 데이터셋 파일은 make_dataset.py가 알아서 건너뛰므로 재실행해도 안전.
+# 이미 생성된 데이터셋은 스킵되고, 학습은 epoch-resume으로 이어서 돈다.
+#
+# LOOPS: 파이프라인 전체를 N회 반복 (라운드마다 자기 자신을 재제출).
+#   각 루프: QPU 이력이 있으면 최신 5개(QPU_RUNS)를 평균한 qpu 프로파일을
+#   만들어 realistic 그리드에 더해 학습하고, 코드별로 QPU를 QPU_RUNS회
+#   제출·분석한다. 그 런들이 다음 루프의 평균 입력이 된다.
+#   첫 루프는 이력이 없으므로 realistic만 학습하고 QPU를 돌린다.
 #
 # repo 루트에서 제출할 것:
-#   sbatch pipeline.sbatch                                 # 두 코드 전부: 생성 + 기본 학습
-#   sbatch pipeline.sbatch --all --mwpm                    # 전체 그리드 학습 + MWPM 기준선
-#   DATASET_ARGS="--smoke" sbatch pipeline.sbatch --smoke  # 빠른 end-to-end 확인
+#   sbatch pipeline.sbatch --mwpm --solution               # 1회 (기본)
+#   LOOPS=5 sbatch pipeline.sbatch --mwpm --solution       # 5루프 반복
+#   QPU_RUNS=3 sbatch pipeline.sbatch ...                  # 루프당 제출 수 변경
 #   CODES=heavyhex sbatch pipeline.sbatch                  # 한 코드만 (heavyhex|surface)
-#   HH_BACKEND=ibm_yonsei sbatch pipeline.sbatch           # heavyhex 백엔드 변경
-#   SURF_BACKEND=ibm_miami sbatch pipeline.sbatch          # surface 백엔드 변경 (기본값)
-#   SWEEP_CONFIG=다른스윕.json sbatch pipeline.sbatch       # 다른 스윕 파일 지정
-#   SWEEP_CONFIG=none sbatch pipeline.sbatch               # 스윕 끄기
-#   HW_ARGS="--dry-run" sbatch pipeline.sbatch             # QPU 단계는 리허설만
-#   HW_ARGS="--shots 20000" sbatch pipeline.sbatch         # 두 백엔드 공통 추가 인자
+#   HH_BACKEND=... / SURF_BACKEND=...                      # 백엔드 변경
+#   DATASET_ARGS="--smoke" sbatch pipeline.sbatch --smoke  # 빠른 end-to-end 확인
+#   SWEEP_CONFIG=다른스윕.json / SWEEP_CONFIG=none          # 별도 스윕 / 스윕 끄기
+#   HW_ARGS="--dry-run" / HW_ARGS="--shots 20000"          # QPU 공통 인자
 #   SKIP_HW=1 sbatch pipeline.sbatch                       # QPU 단계 끄기
 #
 # 추가 인자는 train.py로, DATASET_ARGS는 make_dataset.py로 전달돼
 # (--code는 파이프라인이 코드별로 자동으로 붙이니 직접 주지 말 것).
-# QPU 단계는 코드별로 hardware/run_hw.py --backend <백엔드> --code <코드>
-# (submit->대기->analyze 원샷)를 실행하고, HW_ARGS는 그 뒤에 공통으로
-# 붙는다 (--shots, --dry-run 등). analyze 단독 재실행처럼 서브커맨드를
-# 명시하고 싶으면 pipeline이 아니라 run_hw.py를 직접 실행할 것.
-# 스윕: config.json의 "sweep" 섹션이 있으면 데이터셋 생성과 학습이
-# 자동으로 그 스윕 조합을 돈다 (-n/-p 같은 선택 인자를 주면 그쪽 우선).
-# SWEEP_CONFIG=경로 로 별도 스윕 파일을, =none 으로 비활성화를 지정.
-# 기본 하이퍼파라미터/샘플 수는 config.json의 train/dataset 섹션 자동 적용.
-# (스키마는 train.py 도크스트링 참고)
-# QPU 단계는 keys.json이 있을 때만 실행 — 실제 QPU 잡을 제출하므로
-# 반복 제출을 원치 않으면 SKIP_HW=1을 쓸 것. 두 백엔드는 순차 실행
-# (boston 제출->완료 대기->분석 후 miami 제출)이라 대기 시간이 길 수 있다.
-# analyze는 --ckpt 없이 돌므로 해당 코드의 checkpoint/{MODEL}_*.pt 전부를
-# 평가해 results/hardware/<backend>_<code>_<timestamp>.csv로 남긴다.
+# 학습에 --solution을 주면 QPU analyze에도 자동 전파된다.
+# 스윕: config.json의 "sweep" 섹션(cnn+gnn)이 자동 적용되고, qpu 프로파일이
+# 있는 루프에서는 같은 스윕으로 -n qpu/<이름> 학습이 한 번 더 돈다.
+# QPU 단계는 keys.json이 있을 때만 실행 — 루프당 코드별 QPU_RUNS회의 실제
+# 잡이 제출되므로 반복 제출을 원치 않으면 SKIP_HW=1을 쓸 것.
+# analyze는 코드별 CNN/GNN 체크포인트 전부를 평가해
+# results/hardware/<backend>_<code>_<timestamp>.csv로 남긴다.
 
 set -eo pipefail
 
@@ -63,6 +60,9 @@ flock -n 9 || { echo "이미 실행 중인 파이프라인이 있음 — 중단"
 CODES="${CODES:-heavyhex surface}"
 HH_BACKEND="${HH_BACKEND:-ibm_boston}"
 SURF_BACKEND="${SURF_BACKEND:-ibm_miami}"
+LOOPS="${LOOPS:-1}"
+LOOP="${LOOP:-1}"
+QPU_RUNS="${QPU_RUNS:-5}"
 
 backend_of() {  # 코드 -> QPU 백엔드
     case "$1" in
@@ -80,30 +80,57 @@ gate_of() {     # 코드 -> 규약 게이트 스크립트
 }
 
 echo "host=$(hostname) gpu=${CUDA_VISIBLE_DEVICES:-unset} env=$CONDA_ENV"
-echo "codes=$CODES (heavyhex->$HH_BACKEND, surface->$SURF_BACKEND)"
+echo "loop=$LOOP/$LOOPS qpu_runs=$QPU_RUNS codes=$CODES (heavyhex->$HH_BACKEND, surface->$SURF_BACKEND)"
 echo "dataset_args=${DATASET_ARGS:-<default>} train_args=$* hw_args=${HW_ARGS:-<default>} sweep=${SWEEP_CONFIG:-<none>}"
 
-echo "=== [1/4] 규약 게이트 ==="
+echo "=== [1/5] 규약 게이트 ==="
 for code in $CODES; do
     echo "--- gate: $code ---"
     python "$(gate_of "$code")"
 done
 
-echo "=== [2/4] 데이터셋 생성 ==="
+echo "=== [2/5] QPU 캘리브레이션 프로파일 (이력 있으면 최신 ${QPU_RUNS}개 평균) ==="
+declare -A PROFILE
 for code in $CODES; do
-    echo "--- dataset: $code ---"
+    backend="$(backend_of "$code")"
+    if out=$(python dataset_generation/make_qpu_avg_profile.py \
+                 --code "$code" --backend "$backend" \
+                 --n-runs "$QPU_RUNS" --suffix "loop$LOOP" 2>&1); then
+        echo "$out"
+        PROFILE[$code]=$(sed -n 's/^profile \(qpu\/[^:]*\):.*/\1/p' <<< "$out" | tail -1)
+        echo "--- $code: 프로파일 ${PROFILE[$code]} 사용 ---"
+    else
+        echo "$out"
+        echo "--- $code: QPU 이력 없음/생성 불가 — 이번 루프는 realistic만 ---"
+        PROFILE[$code]=""
+    fi
+done
+
+echo "=== [3/5] 데이터셋 생성 ==="
+for code in $CODES; do
+    echo "--- dataset: $code (realistic) ---"
     python dataset_generation/make_dataset.py --code "$code" \
         ${DATASET_ARGS:-} ${SWEEP_CONFIG:+--config "$SWEEP_CONFIG"}
+    if [[ -n "${PROFILE[$code]}" ]]; then
+        echo "--- dataset: $code (${PROFILE[$code]}) ---"
+        python dataset_generation/make_dataset.py --code "$code" \
+            -n "${PROFILE[$code]}" ${DATASET_ARGS:-}
+    fi
 done
 
-echo "=== [3/4] 학습 ==="
+echo "=== [4/5] 학습 (epoch-resume 이어서) ==="
 for code in $CODES; do
-    echo "--- train: $code ---"
+    echo "--- train: $code (realistic 그리드) ---"
     python train.py --code "$code" "$@" \
         ${SWEEP_CONFIG:+--config "$SWEEP_CONFIG"}
+    if [[ -n "${PROFILE[$code]}" ]]; then
+        echo "--- train: $code (${PROFILE[$code]}) ---"
+        python train.py --code "$code" "$@" \
+            --config "${SWEEP_CONFIG:-config.json}" -n "${PROFILE[$code]}"
+    fi
 done
 
-echo "=== [4/4] QPU 검증 (코드별 submit -> wait -> analyze) ==="
+echo "=== [5/5] QPU 검증 (코드별 submit -> wait -> analyze x ${QPU_RUNS}) ==="
 # 학습을 --solution(참조 구현)으로 돌렸다면 analyze의 모델 로딩도 같은
 # 구현을 써야 한다 — 학습 인자에서 자동으로 이어받는다 (없으면 skeleton).
 HW_SOLUTION=""
@@ -115,8 +142,21 @@ elif [[ ! -f keys.json ]]; then
 else
     for code in $CODES; do
         backend="$(backend_of "$code")"
-        echo "--- QPU: $code @ $backend ${HW_SOLUTION:+(--solution)} ---"
-        python hardware/run_hw.py --backend "$backend" --code "$code" \
-            $HW_SOLUTION ${HW_ARGS:-}
+        for i in $(seq 1 "$QPU_RUNS"); do
+            echo "--- QPU: $code @ $backend (run $i/$QPU_RUNS) ${HW_SOLUTION:+(--solution)} ---"
+            python hardware/run_hw.py --backend "$backend" --code "$code" \
+                $HW_SOLUTION ${HW_ARGS:-}
+        done
     done
+fi
+
+if (( LOOP < LOOPS )); then
+    echo "=== 루프 $LOOP 완료 — 다음 루프($((LOOP + 1))/$LOOPS) 재제출 ==="
+    if command -v sbatch >/dev/null 2>&1; then
+        sbatch --export=ALL,LOOP=$((LOOP + 1)) pipeline.sbatch "$@"
+    else
+        echo "WARNING: sbatch를 찾을 수 없어 재제출 불가 — LOOP=$((LOOP + 1))로 직접 제출할 것"
+    fi
+else
+    echo "=== 전체 $LOOPS 루프 완료 ==="
 fi
