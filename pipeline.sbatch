@@ -104,6 +104,10 @@ for code in $CODES; do
 done
 
 echo "=== [4/4] QPU 검증 (코드별 submit -> wait -> analyze) ==="
+# 학습을 --solution(참조 구현)으로 돌렸다면 analyze의 모델 로딩도 같은
+# 구현을 써야 한다 — 학습 인자에서 자동으로 이어받는다 (없으면 skeleton).
+HW_SOLUTION=""
+case " $* " in *" --solution "*) HW_SOLUTION="--solution" ;; esac
 if [[ "${SKIP_HW:-0}" == "1" ]]; then
     echo "SKIP_HW=1 — QPU 단계 건너뜀"
 elif [[ ! -f keys.json ]]; then
@@ -111,8 +115,8 @@ elif [[ ! -f keys.json ]]; then
 else
     for code in $CODES; do
         backend="$(backend_of "$code")"
-        echo "--- QPU: $code @ $backend ---"
+        echo "--- QPU: $code @ $backend ${HW_SOLUTION:+(--solution)} ---"
         python hardware/run_hw.py --backend "$backend" --code "$code" \
-            ${HW_ARGS:-}
+            $HW_SOLUTION ${HW_ARGS:-}
     done
 fi
