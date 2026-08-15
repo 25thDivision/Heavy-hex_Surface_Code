@@ -42,7 +42,7 @@
 # 반복 제출을 원치 않으면 SKIP_HW=1을 쓸 것. 두 백엔드는 순차 실행
 # (boston 제출->완료 대기->분석 후 miami 제출)이라 대기 시간이 길 수 있다.
 # analyze는 --ckpt 없이 돌므로 해당 코드의 checkpoint/{MODEL}_*.pt 전부를
-# 평가해 results/hardware/hw_<job_id>.csv로 남긴다.
+# 평가해 results/hardware/<backend>_<code>_<timestamp>.csv로 남긴다.
 
 set -eo pipefail
 

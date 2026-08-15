@@ -11,13 +11,15 @@ Pipeline (submit):
 Pipeline (analyze):
   raw results -> check_values() XOR-chain syndrome recovery
     -> syndrome tensor -> CNN + MWPM decoding -> LER report
-    -> results/hardware/hw_<run_id>.csv
+    -> results/hardware/<backend>_<code>_<timestamp>.csv
 Pipeline (all): submit -> wait_for_job -> analyze in one go.
 
 Every submission gets its own folder so the run can be re-analyzed (and
 the QPU environment of that moment stays on record):
 
-  hardware/runs/<job_id>/          (dry-run: dryrun_<YYYYMMDD-HHMMSS>/)
+  hardware/runs/<backend>_<YYYYMMDD-HHMMSS>/   (dry-run: ..._dryrun/;
+    the job id lives in job.json — analyze --job-id finds the folder
+    by scanning job.json, so legacy job-id-named folders still work)
     job.json             backend, cycles, shots, dd, timestamps,
                          local package versions, circuit stats
     coupling.json        coupling map / basis gates (fetch_coupling output)
@@ -176,15 +178,20 @@ def cmd_submit(args):
           f"pulses={dd_pulse_stats(tqc)}")
 
     # 4) submit (unless rehearsing), then snapshot everything into the
-    #    run folder named after the job id
+    #    run folder, named <backend>_<timestamp> (job.json keeps the job
+    #    id — analyze finds the folder by scanning job.json, so legacy
+    #    job-id-named folders keep working too)
+    ts = time.strftime("%Y%m%d-%H%M%S")
     if args.dry_run:
         job = None
-        run_dir = RUNS_DIR / f"dryrun_{time.strftime('%Y%m%d-%H%M%S')}"
+        run_dir = RUNS_DIR / f"{args.backend}_{ts}_dryrun"
         print("--dry-run: not submitting (snapshot is still saved).")
     else:
         sampler = SamplerV2(mode=backend)
         job = sampler.run([tqc], shots=args.shots)
-        run_dir = RUNS_DIR / job.job_id()
+        run_dir = RUNS_DIR / f"{args.backend}_{ts}"
+    while run_dir.exists():                  # same-second collision guard
+        run_dir = run_dir.with_name(run_dir.name + "b")
     run_dir.mkdir(parents=True, exist_ok=True)
 
     shutil.move(coupling_path, run_dir / "coupling.json")
@@ -230,6 +237,29 @@ def wait_for_job(job, poll=30):
         time.sleep(poll)
 
 
+def find_run_dir(job_id):
+    """Locate the run folder of a job id.
+
+    Run folders are named <backend>_<timestamp> (job.json holds the job
+    id), so look there first by scanning job.json; a folder literally
+    named after the job id (legacy layout) also matches. Returns None
+    when no local folder exists (e.g. analyzing on another machine)."""
+    direct = RUNS_DIR / job_id
+    if direct.exists():
+        return direct
+    if RUNS_DIR.exists():
+        for p in sorted(RUNS_DIR.iterdir()):
+            meta_path = p / "job.json"
+            if not (p.is_dir() and meta_path.exists()):
+                continue
+            try:
+                if json.load(open(meta_path)).get("job_id") == job_id:
+                    return p
+            except Exception:
+                continue
+    return None
+
+
 def fetch_raw(args):
     """Return (syn, dat, cycles): raw bits in clbit-index order."""
     if args.npz:
@@ -237,7 +267,8 @@ def fetch_raw(args):
         return (d["syn"].astype(np.uint8), d["dat"].astype(np.uint8),
                 int(d["cycles"]))
 
-    run_dir = RUNS_DIR / args.job_id
+    # legacy fallback name if the job has no local run folder yet
+    run_dir = find_run_dir(args.job_id) or (RUNS_DIR / args.job_id)
     cached = run_dir / "raw.npz"
     if cached.exists():
         d = np.load(cached)
@@ -269,13 +300,23 @@ def fetch_raw(args):
 
 
 def cmd_analyze(args):
-    # the run's code family: job.json wins (submit recorded it), else the
-    # --code / default heavyhex (offline --npz re-analysis)
+    # run metadata: job.json wins (submit recorded it), else the --code /
+    # default heavyhex (offline --npz re-analysis). backend/submitted_at
+    # feed the report name and columns.
     code = getattr(args, "code", None) or "heavyhex"
+    hw_backend, submitted_at, job_id = None, None, args.job_id
+    run_dir = None
     if args.job_id:
-        meta_path = RUNS_DIR / args.job_id / "job.json"
-        if meta_path.exists():
-            code = json.load(open(meta_path)).get("code", code)
+        run_dir = find_run_dir(args.job_id)
+    elif args.npz:
+        run_dir = Path(args.npz).resolve().parent
+    meta_path = (run_dir / "job.json") if run_dir else None
+    if meta_path and meta_path.exists():
+        meta = json.load(open(meta_path))
+        code = meta.get("code", code)
+        hw_backend = meta.get("backend")
+        submitted_at = meta.get("submitted_at")
+        job_id = meta.get("job_id", job_id)
 
     if code == "surface":
         from circuits.rotatedSurface.rotatedSurface3 import (
@@ -394,16 +435,26 @@ def cmd_analyze(args):
         print(f"{name:<55} {v:>8.4f} {_fmt(pl):>24} {_fmt(ratio):>15}")
 
     # persist the report next to the training results
-    run_id = args.job_id or Path(args.npz).resolve().parent.name
+    # report file: <backend>_<code>_<timestamp>.csv, timestamp = the
+    # run's submitted_at (falls back to the analysis time when the run
+    # metadata is unavailable, e.g. a loose --npz file)
+    job_id = job_id or (Path(args.npz).resolve().parent.name if args.npz
+                        else None)
+    code_label = "rotatedSurface" if code == "surface" else "heavyhex"
+    ts = (submitted_at.replace("-", "").replace(":", "").replace("T", "-")
+          if submitted_at else time.strftime("%Y%m%d-%H%M%S"))
     RESULTS_HW_DIR.mkdir(parents=True, exist_ok=True)
-    csv_path = RESULTS_HW_DIR / f"hw_{run_id}.csv"
+    csv_path = RESULTS_HW_DIR / f"{hw_backend or 'unknown'}_{code_label}_{ts}.csv"
     with open(csv_path, "w", newline="") as f:
         w = csv.writer(f)
         w.writerow(["decoder", "ler", "parity_LER (diagnostic)",
-                    "LER/MWPM ratio", "shots", "cycles", "run_id"])
+                    "LER/MWPM ratio", "shots", "cycles", "backend",
+                    "timestamp", "job_id"])
         for name, v, pl, ratio in rows:
             w.writerow([name, f"{v:.6f}", _fmt(pl, ".6f"),
-                        _fmt(ratio, ".6f"), shots, cycles, run_id])
+                        _fmt(ratio, ".6f"), shots, cycles,
+                        hw_backend or "unknown", submitted_at or ts,
+                        job_id or ""])
     print(f"saved -> {csv_path}")
 
 

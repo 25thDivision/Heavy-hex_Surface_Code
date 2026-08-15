@@ -376,9 +376,13 @@ analyze는 잡이 아직 안 끝났으면 알아서 폴링하며 기다렸다가
 - 학습 로그: `results/train/{MODEL}_<code>_d3_c<cycles>_p<p>_<노이즈태그>.csv`
 - 체크포인트: `checkpoint/{MODEL}_<code>_d3_c<cycles>_p<p>_<노이즈태그>.pt`
   (epoch마다 검증 LER을 재서 **최저 val LER**일 때만 갱신돼)
-- QPU 런: `hardware/runs/<job_id>/` — raw 결과와 함께 그 시점의 QPU
+- QPU 런: `hardware/runs/<backend>_<타임스탬프>/` (job id는 job.json에
+  기록; `analyze --job-id`는 job.json 스캔으로 폴더를 찾으므로 옛
+  job-id 이름 폴더도 계속 동작) — raw 결과와 함께 그 시점의 QPU
   환경 기록(캘리브레이션 스냅샷, 제출한 회로 등)이 통째로 남아
-- QPU LER 리포트: `results/hardware/hw_<job_id>.csv`
+- QPU LER 리포트: `results/hardware/<backend>_<코드>_<타임스탬프>.csv`
+  (코드는 heavyhex/rotatedSurface 표기; 타임스탬프는 제출 시각.
+   backend/timestamp/job_id 컬럼이 표 안에도 들어가)
   (`hardware/run_hw.py analyze`가 표로 출력한 내용을 저장)
 
 ## 4. 규약으로 고정된 부분 (건드리지 말 것)
