@@ -54,9 +54,11 @@ class FastTensorDataLoader:
         self.shuffle = shuffle
 
     def __iter__(self):
-        if self.shuffle:
-            idx = torch.randperm(self.dataset_len, device=self.tensors[0].device)
-            self.tensors = [t[idx] for t in self.tensors]
+        # shuffle via a permutation index consumed per batch — no full
+        # copy of the (GPU-resident) dataset at epoch start
+        self._idx = (torch.randperm(self.dataset_len,
+                                    device=self.tensors[0].device)
+                     if self.shuffle else None)
         self._i = 0
         return self
 
@@ -64,7 +66,11 @@ class FastTensorDataLoader:
         if self._i >= self.dataset_len:
             raise StopIteration
         j = min(self._i + self.batch_size, self.dataset_len)
-        batch = [t[self._i:j] for t in self.tensors]
+        if self._idx is None:
+            batch = [t[self._i:j] for t in self.tensors]
+        else:
+            sel = self._idx[self._i:j]
+            batch = [t[sel] for t in self.tensors]
         self._i = j
         return batch
 

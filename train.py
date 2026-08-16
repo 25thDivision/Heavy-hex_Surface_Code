@@ -115,7 +115,18 @@ def parse_args():
     ap.add_argument("--fresh", action="store_true",
                     help="ignore <tag>.resume.pt and start training from "
                          "scratch (default: resume — continue the global "
-                         "epoch count until early stopping triggers again)")
+                         "epoch count; configs that already early-stopped "
+                         "are skipped)")
+    ap.add_argument("--continue-stopped", action="store_true",
+                    help="resume training a config even if it already "
+                         "early-stopped (patience starts fresh, trains "
+                         "until early stopping triggers again)")
+    ap.add_argument("--min-delta", type=float, default=0.0015,
+                    help="minimum val-LER improvement that resets the "
+                         "early-stopping patience (improvements below "
+                         "this are statistical noise on the val set; "
+                         "the best checkpoint still updates on any "
+                         "improvement)")
     ap.add_argument("--config", default=None,
                     help="sweep-config JSON: loop training over its run "
                          "entries. Defaults to config.json's sweep "
@@ -166,14 +177,15 @@ def ensure_coupling_json(backend="ibm_yonsei"):
 
 
 def evaluate(model, loader, mod, aux_weight, pos_weight, device,
-             code="heavyhex"):
+             code="heavyhex", amp=False):
     model.eval()
     q_logits, l_logits, y_qs, y_ls = [], [], [], []
     val_loss, nb, t_inf, n_inf = 0.0, 0, 0.0, 0
     with torch.no_grad():
         for xb, yq, yl in loader:
             t0 = time.time()
-            ql, ll = model(xb)
+            with torch.amp.autocast("cuda", enabled=amp):
+                ql, ll = model(xb)
             t_inf += time.time() - t0
             n_inf += xb.shape[0]
             loss, _, _ = mod.compute_loss(ql, ll, yq, yl, aux_weight, pos_weight)
@@ -212,6 +224,63 @@ def fmt_ratio(ratio):
 def train_one(args, mod, noise, p, et, device):
     print(f"\n{'=' * 70}\n>>> {args.model}/{args.code} | {noise} | p={p} | "
           f"{et} | cycles={args.cycles}")
+
+    # flat layout: results/train/CNN_heavyhex_d3_c3_p0.005_dp0.001_....csv
+    # ({MODEL}_{code}_d..., d = code distance, c = number of QEC cycles;
+    #  the error type is omitted since the grid is X-only).
+    # Paths come first so the early-stopped skip below can decide without
+    # loading the (large) training split.
+    tag = f"{args.code}_d{DISTANCE}_c{args.cycles}_p{p}_{noise_tag(noise)}"
+    if getattr(args, "run_name", ""):
+        tag += f"_{args.run_name}"
+    prefix = args.model.upper()
+    result_dir = Path(args.outdir)
+    ckpt_dir = Path(args.ckpt_dir)
+    result_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = result_dir / f"{prefix}_{tag}.csv"
+    ckpt_path = ckpt_dir / f"{prefix}_{tag}.pt"
+    resume_path = ckpt_dir / f"{prefix}_{tag}.resume.pt"
+
+    def mwpm_baseline():
+        """MWPM on the same val data (npz-based, cheap) so every report
+        can carry the LER/MWPM ratio column."""
+        if not args.mwpm:
+            return None
+        from baseline.mwpm import mwpm_ler_from_dataset
+        from model.data import npz_path
+        v = mwpm_ler_from_dataset(
+            npz_path(args.data_dir, args.code, noise, "test",
+                     args.cycles, p, et))
+        print(f"    MWPM baseline LER (val data): {v:.4f}")
+        return v
+
+    def summary_row(best, raw_val, total, mwpm_ler):
+        row = {"model": args.model, "noise": noise, "p": p, "type": et,
+               **best, "raw_ler": raw_val, "total_epochs": total}
+        if mwpm_ler is not None:
+            row["mwpm_ler"] = mwpm_ler
+        row["ler_mwpm_ratio"] = mwpm_ratio(best["ler"], mwpm_ler)
+        return row
+
+    # ---- early-stopped skip ------------------------------------------
+    # A config whose previous session ended in early stopping is done:
+    # skip the whole training loop (decided BEFORE loading the training
+    # split) and only rebuild the summary/MWPM from the stored state.
+    # --continue-stopped trains it further; --fresh restarts it.
+    if (resume_path.exists() and not args.fresh
+            and not args.continue_stopped):
+        state = torch.load(resume_path, map_location="cpu",
+                           weights_only=False)
+        if state.get("stopped", False):
+            best = state["best"]
+            total = state["total_epochs"]
+            print(f"    -> already early-stopped (best ep "
+                  f"{best['epoch']}/{total} trained) — skipping training "
+                  f"(--continue-stopped to train more, --fresh to restart)")
+            return summary_row(best, state.get("raw_ler", float("nan")),
+                               total, mwpm_baseline())
+
     Xtr, yqtr, yltr = load_split(args.data_dir, args.code, noise, "train",
                                  args.cycles, p, et, device)
     Xva, yqva, ylva = load_split(args.data_dir, args.code, noise, "test",
@@ -242,28 +311,11 @@ def train_one(args, mod, noise, p, et, device):
             w = float(np.sqrt(w))
         pos_weight = torch.full((spec["num_qubits"],), w, device=device)
 
-    # flat layout: results/train/CNN_heavyhex_d3_c3_p0.005_dp0.001_....csv
-    # ({MODEL}_{code}_d..., d = code distance, c = number of QEC cycles;
-    #  the error type is omitted since the grid is X-only)
-    tag = f"{args.code}_d{DISTANCE}_c{args.cycles}_p{p}_{noise_tag(noise)}"
-    if getattr(args, "run_name", ""):
-        tag += f"_{args.run_name}"
-    prefix = args.model.upper()
-    result_dir = Path(args.outdir)
-    ckpt_dir = Path(args.ckpt_dir)
-    result_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = result_dir / f"{prefix}_{tag}.csv"
-    ckpt_path = ckpt_dir / f"{prefix}_{tag}.pt"
-    resume_path = ckpt_dir / f"{prefix}_{tag}.resume.pt"
-
     # ---- epoch-level resume ------------------------------------------
     # <tag>.resume.pt carries the full training state (model+optimizer,
-    # cumulative epoch count, global best record). When it exists the run
-    # CONTINUES: epoch numbers are global across sessions and the CSV is
-    # appended. Patience starts FRESH each session, so a re-run keeps
-    # training until early stopping triggers again (session budget =
-    # --epochs). --fresh starts over from scratch.
+    # cumulative epoch count, global best record, stopped flag). When it
+    # exists the run CONTINUES: epoch numbers are global across sessions
+    # and the CSV is appended. Patience starts fresh in the session.
     best = {"ler": float("inf"), "ecr": 0.0, "acc": 0.0,
             "parity_ler": float("nan"), "epoch": 0}
     start_epoch, patience, resumed = 0, 0, False
@@ -277,18 +329,17 @@ def train_one(args, mod, noise, p, et, device):
         resumed = True
         print(f"    resume: {start_epoch} epochs done, best LER "
               f"{best['ler']:.4f} @ ep {best['epoch']} — continuing until "
-              f"early stopping triggers again")
+              f"early stopping triggers"
+              + (" again (--continue-stopped)" if state.get("stopped")
+                 else ""))
 
-    # MWPM baseline on the same val data (once, before the loop) so every
-    # evaluation report can carry the LER/MWPM ratio column
-    mwpm_ler = None
-    if args.mwpm:
-        from baseline.mwpm import mwpm_ler_from_dataset
-        from model.data import npz_path
-        mwpm_ler = mwpm_ler_from_dataset(
-            npz_path(args.data_dir, args.code, noise, "test",
-                     args.cycles, p, et))
-        print(f"    MWPM baseline LER (val data): {mwpm_ler:.4f}")
+    mwpm_ler = mwpm_baseline()
+
+    # ---- AMP (config.json train.amp): fp16 autocast + GradScaler -----
+    use_amp = bool(getattr(args, "amp", False)) and str(device).startswith("cuda")
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    if use_amp:
+        print("    AMP: fp16 autocast enabled")
 
     gepoch = start_epoch                     # last executed global epoch
     m = None
@@ -306,17 +357,20 @@ def train_one(args, mod, noise, p, et, device):
             train_loss, nb = 0.0, 0
             for xb, yq, yl in train_loader:
                 optimizer.zero_grad()
-                ql, ll = model(xb)
-                loss, _, _ = mod.compute_loss(ql, ll, yq, yl,
-                                              args.aux_weight, pos_weight)
-                loss.backward()
-                optimizer.step()
+                with torch.amp.autocast("cuda", enabled=use_amp):
+                    ql, ll = model(xb)
+                    loss, _, _ = mod.compute_loss(ql, ll, yq, yl,
+                                                  args.aux_weight,
+                                                  pos_weight)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
                 train_loss += loss.item()
                 nb += 1
             train_loss /= max(nb, 1)
 
             m = evaluate(model, val_loader, mod, args.aux_weight,
-                         pos_weight, device, args.code)
+                         pos_weight, device, args.code, amp=use_amp)
             ratio = mwpm_ratio(m["ler"], mwpm_ler)
             writer.writerow([epoch, f"{train_loss:.6f}",
                              f"{m['val_loss']:.6f}", f"{m['ecr']:.4f}",
@@ -333,23 +387,33 @@ def train_one(args, mod, noise, p, et, device):
                   f"parity_LER (diagnostic) {m['parity_ler']:.4f} | "
                   f"LER/MWPM ratio {fmt_ratio(ratio)} | pat {patience}")
 
+            # min_delta early stopping: ANY improvement refreshes the
+            # best checkpoint, but only an improvement larger than
+            # min_delta (i.e. above validation-set statistical noise)
+            # resets the patience counter.
+            gain = best["ler"] - m["ler"]      # +inf on the first epoch
             if m["ler"] < best["ler"]:
                 best = {"ler": m["ler"], "ecr": m["ecr"], "acc": m["acc"],
                         "parity_ler": m["parity_ler"], "epoch": epoch}
-                patience = 0
                 torch.save({"model_state_dict": model.state_dict(),
                             "epoch": epoch, "best_epoch": epoch,
                             "total_epochs": epoch, "val_ler": m["ler"],
                             "val_ecr": m["ecr"], "config": vars(args),
                             "noise": noise, "p": p, "error_type": et},
                            ckpt_path)
+            if gain > args.min_delta:
+                patience = 0
             else:
                 patience += 1
-            # training state for the next session (resume)
+            stop_now = patience >= args.patience
+            # training state for the next session (resume); stopped=True
+            # makes re-runs skip this config entirely
             torch.save({"model_state_dict": model.state_dict(),
                         "optimizer_state_dict": optimizer.state_dict(),
-                        "total_epochs": epoch, "best": best}, resume_path)
-            if patience >= args.patience:
+                        "total_epochs": epoch, "best": best,
+                        "raw_ler": m["raw_ler"], "stopped": stop_now},
+                       resume_path)
+            if stop_now:
                 print("    -> early stopping")
                 break
 
@@ -362,12 +426,7 @@ def train_one(args, mod, noise, p, et, device):
 
     raw_val = (m["raw_ler"] if m is not None
                else float(ylva.float().mean().item()))
-    row = {"model": args.model, "noise": noise, "p": p, "type": et, **best,
-           "raw_ler": raw_val, "total_epochs": gepoch}
-    if mwpm_ler is not None:
-        row["mwpm_ler"] = mwpm_ler
-    row["ler_mwpm_ratio"] = mwpm_ratio(best["ler"], mwpm_ler)
-    return row
+    return summary_row(best, raw_val, gepoch, mwpm_ler)
 
 
 def expand_config(args):

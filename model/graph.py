@@ -196,7 +196,9 @@ class GraphBuilder:
         """Augmented tensor (B, 2C+1, H, W) uint8 -> detector bits (B, N).
 
         Torch, stays on x's device. Raises if x lacks the final-Z channel
-        (build it with augment_features first)."""
+        (build it with augment_features first). The (static) index
+        tensors are cached per device so the per-batch call does no
+        host-to-device transfers."""
         C = self.num_cycles
         if x.shape[1] != 2 * C + 1:
             raise ValueError(
@@ -204,12 +206,19 @@ class GraphBuilder:
                 f"{tuple(x.shape)} — run augment_features(features, "
                 f"final_bits) (train.py/run_hw.py do this automatically "
                 f"for --model gnn)")
+        cache = getattr(self, "_src_cache", None)
+        if cache is None:
+            cache = self._src_cache = {}
+        key = x.device
+        if key not in cache:
+            src2 = torch.as_tensor(self.src2, device=key)
+            cache[key] = (torch.as_tensor(self.src1, device=key),
+                          src2.clamp(min=0),
+                          (src2 >= 0).to(torch.uint8))
+        src1, src2c, has2 = cache[key]
         xf = x.reshape(x.shape[0], -1)
-        src1 = torch.as_tensor(self.src1, device=x.device)
-        src2 = torch.as_tensor(self.src2, device=x.device)
         v = xf[:, src1]
-        has2 = src2 >= 0
-        v2 = xf[:, src2.clamp(min=0)] * has2.to(xf.dtype)
+        v2 = xf[:, src2c] * has2.to(xf.dtype)
         return torch.bitwise_xor(v, v2)
 
 

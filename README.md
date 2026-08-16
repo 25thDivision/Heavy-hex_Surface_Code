@@ -338,9 +338,19 @@ python hardware/run_hw.py all                     # 제출→완료 대기→분
 
 analyze는 잡이 아직 안 끝났으면 알아서 폴링하며 기다렸다가 진행해.
 학습은 **epoch-resume**이 기본이야: 같은 (model, code, noise, p) 조합을
-다시 돌리면 `<tag>.resume.pt`에서 이어서 학습하고 (epoch 번호는 전역,
-CSV는 append, patience는 세션마다 새로 시작해 early stopping이 다시
-발동할 때까지 진행), `--fresh`로 처음부터 다시 학습할 수 있어.
+다시 돌리면 `<tag>.resume.pt`에서 이어서 학습해 (epoch 번호는 전역,
+CSV는 append). **early stopping이 이미 발동한 조합은 재실행 시 학습을
+통째로 건너뛰고**(데이터 로드 전에 판정) 저장된 best로 요약만 출력해 —
+파이프라인 루프 2+에서 realistic 그리드가 사실상 즉시 통과되는 이유야.
+더 학습하고 싶으면 `--continue-stopped`(patience 새로 시작, 다시
+멈출 때까지), 처음부터는 `--fresh`.
+Early stopping은 **min_delta 기반**이야: best 체크포인트는 어떤 미세
+개선에도 갱신되지만, patience 리셋은 val LER이 `min_delta`(기본 0.0015
+— val 100k 기준 통계 노이즈 2σ) 넘게 좋아졌을 때만 돼서, 노이즈 수준의
+"개선"이 학습을 30 epoch 꽉 채우게 만들지 않아. config `train` 섹션의
+`min_delta`/`--min-delta`로 조절.
+`amp: true`(config train 섹션)면 CUDA에서 fp16 autocast + GradScaler로
+학습해 (가중치·loss는 fp32 유지, 스모크 검증에서 LER 궤적 동일 확인).
 체크포인트에는 `best_epoch`(저장된 weight의 epoch)와 `total_epochs`
 (누적 학습 epoch)가 기록되고, 학습 summary와 하드웨어 리포트 CSV에
 같은 컬럼이 표시돼.

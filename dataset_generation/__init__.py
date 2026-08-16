@@ -48,8 +48,8 @@ def load_config(path=None):
 # "model" lets one sweep train cnn and gnn runs on the same data, so the
 # summary prints a combined CNN/GNN/MWPM table.
 SWEEP_KEYS = {"noise", "rates", "error_types", "cycles", "epochs",
-              "patience", "batch_size", "lr", "aux_weight", "pos_weight",
-              "mwpm", "name", "model"}
+              "patience", "min_delta", "batch_size", "lr", "aux_weight",
+              "pos_weight", "mwpm", "name", "model"}
 _LIST_KEYS = ("noise", "rates", "error_types")
 
 
@@ -98,8 +98,8 @@ def has_sweep(path=None):
 
 # keys allowed per config section consumed by load_options
 OPTION_KEYS = {
-    "train": {"cycles", "epochs", "patience", "batch_size", "lr",
-              "aux_weight", "pos_weight", "mwpm",
+    "train": {"cycles", "epochs", "patience", "min_delta", "batch_size",
+              "lr", "aux_weight", "pos_weight", "mwpm", "amp",
               "data_dir", "outdir", "ckpt_dir"},
     "dataset": {"cycles", "train_samples", "test_samples", "seed",
                 "outdir"},
