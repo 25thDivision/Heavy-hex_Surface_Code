@@ -8,11 +8,27 @@ Pipeline (submit):
     ALL_PHYS mapped through embedding_for(backend), optimization_level=1)
     -> dd_utils.apply_dd(tqc, backend.target)
     -> QPU environment snapshot -> SamplerV2 submit
+Submission model: ONE job per (backend, code) carrying --pubs PUBs of
+the same ISA circuit (PUB = Primitive Unified Bloc, the V2 primitives'
+(circuit, parameter values, shots) execution unit) — a single queue
+entry buys shots x pubs. Backend limits (max_shots / max_experiments)
+are queried and the plan auto-splits into extra PUBs/jobs (job.json then
+carries job_ids). Every submission is registered in
+hardware/pending_jobs.json; `collect` (run at the start of each
+pipeline loop) analyzes whatever finished and carries the rest over, so
+the pipeline never blocks on the queue.
+
 Pipeline (analyze):
-  raw results -> check_values() XOR-chain syndrome recovery
-    -> syndrome tensor -> CNN + MWPM decoding -> LER report
+  raw results (all PUBs concatenated, pub_shots recorded)
+    -> check_values() XOR-chain syndrome recovery
+    -> syndrome tensor -> CNN/GNN + MWPM decoding -> LER report with a
+    ler_std_over_pubs column (per-PUB LER spread)
     -> results/hardware/<backend>_<code>_<timestamp>.csv
-Pipeline (all): submit -> wait_for_job -> analyze in one go.
+  First collection also stores run_started_at (job metrics) in job.json
+  and the calibration AS OF execution time in properties_run.json —
+  make_qpu_avg_profile prefers this over the submission-time snapshot.
+Pipeline (all): submit -> wait_for_job(s) -> analyze in one go
+  (manual use; the sbatch pipeline uses submit + collect).
 
 Every submission gets its own folder so the run can be re-analyzed (and
 the QPU environment of that moment stays on record):
@@ -177,18 +193,41 @@ def cmd_submit(args):
     print(f"transpiled+DD({args.dd}): depth={tqc.depth()}, "
           f"pulses={dd_pulse_stats(tqc)}")
 
-    # 4) submit (unless rehearsing), then snapshot everything into the
-    #    run folder, named <backend>_<timestamp> (job.json keeps the job
-    #    id — analyze finds the folder by scanning job.json, so legacy
-    #    job-id-named folders keep working too)
+    # 4) submit (unless rehearsing) as ONE job carrying --pubs PUBs of
+    #    the same ISA circuit. PUB = Primitive Unified Bloc, the
+    #    (circuit, parameter values, shots) execution unit of the V2
+    #    primitives — packing N PUBs into one job claims a SINGLE queue
+    #    entry for N x shots total. Backend limits (max_shots per PUB,
+    #    max_experiments per job) are queried and the plan auto-splits;
+    #    if the lookup fails we submit as requested with a warning.
+    #    The run folder is named <backend>_<timestamp> (job ids live in
+    #    job.json — analyze/collect find the folder by scanning job.json,
+    #    so legacy job-id-named folders keep working too).
     ts = time.strftime("%Y%m%d-%H%M%S")
+    jobs = []
     if args.dry_run:
-        job = None
         run_dir = RUNS_DIR / f"{args.backend}_{ts}_dryrun"
-        print("--dry-run: not submitting (snapshot is still saved).")
+        shots_per_pub, per_job = args.shots, [args.pubs]
+        print(f"--dry-run: not submitting (PUB plan: {args.pubs} PUB x "
+              f"{args.shots} shots in 1 job; snapshot is still saved).")
     else:
+        max_shots = max_exp = None
+        try:
+            cfg_b = backend.configuration()
+            max_shots = getattr(cfg_b, "max_shots", None)
+            max_exp = getattr(cfg_b, "max_experiments", None)
+        except Exception as e:
+            print(f"WARNING: backend.configuration() lookup failed ({e}) "
+                  f"— submitting without limit checks")
+        shots_per_pub, per_job = _plan_pubs(args.shots, args.pubs,
+                                            max_shots, max_exp)
+        if shots_per_pub != args.shots or len(per_job) > 1:
+            print(f"backend limits (max_shots={max_shots}, "
+                  f"max_experiments={max_exp}) -> {shots_per_pub} "
+                  f"shots/PUB, PUBs per job: {per_job}")
         sampler = SamplerV2(mode=backend)
-        job = sampler.run([tqc], shots=args.shots)
+        for n in per_job:
+            jobs.append(sampler.run([tqc] * n, shots=shots_per_pub))
         run_dir = RUNS_DIR / f"{args.backend}_{ts}"
     while run_dir.exists():                  # same-second collision guard
         run_dir = run_dir.with_name(run_dir.name + "b")
@@ -200,9 +239,12 @@ def cmd_submit(args):
         qpy.dump(tqc, f)
     print("   saved circuit.qpy (exact ISA circuit incl. DD delays)")
 
-    meta = {"job_id": job.job_id() if job else None,
+    job_ids = [j.job_id() for j in jobs]
+    meta = {"job_id": job_ids[0] if job_ids else None,
+            "job_ids": job_ids,
+            "n_pubs": sum(per_job), "shots_per_pub": shots_per_pub,
             "backend": args.backend, "code": args.code, "cycles": args.cycles,
-            "shots": args.shots, "dd": args.dd,
+            "shots": args.shots, "pubs": args.pubs, "dd": args.dd,
             "initial_layout": layout,
             "submitted_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "dry_run": args.dry_run,
@@ -211,11 +253,19 @@ def cmd_submit(args):
             "versions": _local_versions()}
     _json_dump(meta, run_dir / "job.json")
     print(f"run folder: {run_dir}")
-    if job:
-        print(f"submitted: job_id={job.job_id()}")
-        print(f"next: python hardware/run_hw.py analyze "
-              f"--job-id {job.job_id()} --ckpt <checkpoint.pt>")
-    return job
+    if jobs:
+        pend = _load_pending()
+        pend.append({"job_id": job_ids[0], "job_ids": job_ids,
+                     "backend": args.backend, "code": args.code,
+                     "run_dir": run_dir.name,
+                     "submitted_at": meta["submitted_at"]})
+        _save_pending(pend)
+        print(f"submitted: {len(jobs)} job(s) {job_ids} — "
+              f"{sum(per_job)} PUB x {shots_per_pub} shots, registered in "
+              f"pending_jobs.json (다음 루프의 수거 단계가 자동 분석)")
+        print(f"manual: python hardware/run_hw.py analyze "
+              f"--job-id {job_ids[0]}")
+    return jobs
 
 
 def wait_for_job(job, poll=30):
@@ -260,43 +310,164 @@ def find_run_dir(job_id):
     return None
 
 
+PENDING_PATH = _ROOT / "hardware" / "pending_jobs.json"
+
+
+def _load_pending():
+    if not PENDING_PATH.exists():
+        return []
+    try:
+        return json.load(open(PENDING_PATH))
+    except Exception as e:
+        print(f"WARNING: pending_jobs.json unreadable ({e}) — "
+              f"treating as empty")
+        return []
+
+
+def _save_pending(entries):
+    PENDING_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _json_dump(entries, PENDING_PATH)
+
+
+def _remove_pending(job_id):
+    entries = _load_pending()
+    kept = [e for e in entries
+            if e.get("job_id") != job_id
+            and job_id not in (e.get("job_ids") or [])]
+    if len(kept) != len(entries):
+        _save_pending(kept)
+
+
+def _plan_pubs(shots, pubs, max_shots, max_experiments):
+    """Backend-limit-aware PUB plan -> (shots per PUB, PUBs per job).
+
+    Keeps the total ~ shots*pubs: a PUB whose shots exceed max_shots is
+    subdivided; when the PUB count exceeds max_experiments the job is
+    split (list entry = one job's PUB count)."""
+    import math
+    shots_per_pub, n_pubs = shots, pubs
+    if max_shots and shots_per_pub > max_shots:
+        k = math.ceil(shots_per_pub / max_shots)
+        shots_per_pub = math.ceil(shots / k)
+        n_pubs = pubs * k
+    per_job, remaining = [], n_pubs
+    cap = max_experiments if max_experiments else n_pubs
+    while remaining > 0:
+        n = min(remaining, cap)
+        per_job.append(n)
+        remaining -= n
+    return shots_per_pub, per_job
+
+
+def _latest_qpu_profile(backend, code):
+    """Newest registered qpu/<backend>_<code>_* profile name (or None) —
+    the collect path uses it for the MWPM DEM weights."""
+    try:
+        from dataset_generation import load_config
+        profs = load_config().get("noise_profiles", {})
+    except Exception:
+        return None
+    cands = [(v.get("provenance", {}).get("generated_at", ""), k)
+             for k, v in profs.items()
+             if k.startswith(f"qpu/{backend}_{code}_")]
+    return max(cands)[1] if cands else None
+
+
 def fetch_raw(args):
-    """Return (syn, dat, cycles): raw bits in clbit-index order."""
+    """Return (syn, dat, cycles, pub_shots): raw bits in clbit order.
+
+    Multi-PUB / multi-job aware: PUB results are concatenated in order
+    and pub_shots records each PUB's shot count. Legacy caches / loose
+    npz without pub_shots count as a single PUB (pub_shots=None).
+    On first collection this also records run_started_at (job metrics
+    "running" timestamp) into job.json and saves the calibration AS OF
+    execution time to properties_run.json."""
     if args.npz:
         d = np.load(args.npz)
+        ps = d["pub_shots"] if "pub_shots" in d.files else None
         return (d["syn"].astype(np.uint8), d["dat"].astype(np.uint8),
-                int(d["cycles"]))
+                int(d["cycles"]), ps)
 
     # legacy fallback name if the job has no local run folder yet
     run_dir = find_run_dir(args.job_id) or (RUNS_DIR / args.job_id)
     cached = run_dir / "raw.npz"
     if cached.exists():
         d = np.load(cached)
+        ps = d["pub_shots"] if "pub_shots" in d.files else None
         return (d["syn"].astype(np.uint8), d["dat"].astype(np.uint8),
-                int(d["cycles"]))
+                int(d["cycles"]), ps)
 
     keys = load_keys()
     service = get_service(keys)
-    job = service.job(args.job_id)
-    wait_for_job(job, poll=getattr(args, "poll", 30))
     cycles = args.cycles
+    meta, job_ids = {}, [args.job_id]
     meta_path = run_dir / "job.json"
     if meta_path.exists():
-        cycles = json.load(open(meta_path)).get("cycles", cycles)
-    res = job.result()[0]
-    # order='little' -> column i is clbit i, i.e. syn bit cyc*16+j and
-    # dat bit i in DATA_PHYS order — exactly the check_values() layout
-    syn = res.data["syn"].to_bool_array(order="little").astype(np.uint8)
-    dat = res.data["data"].to_bool_array(order="little").astype(np.uint8)
+        meta = json.load(open(meta_path))
+        cycles = meta.get("cycles", cycles)
+        job_ids = meta.get("job_ids") or [meta.get("job_id") or args.job_id]
+
+    syns, dats, pub_shots, metrics_all = [], [], [], []
+    first_running = None
+    for jid in job_ids:
+        job = service.job(jid)
+        wait_for_job(job, poll=getattr(args, "poll", 30))
+        # order='little' -> column i is clbit i, i.e. syn bit cyc*16+j and
+        # dat bit i in DATA_PHYS order — exactly the check_values() layout
+        for res in job.result():
+            s = res.data["syn"].to_bool_array(order="little").astype(np.uint8)
+            t = res.data["data"].to_bool_array(order="little").astype(np.uint8)
+            syns.append(s)
+            dats.append(t)
+            pub_shots.append(s.shape[0])
+        try:
+            mt = job.metrics()
+            metrics_all.append(mt)
+            r = (mt.get("timestamps") or {}).get("running")
+            if r and (first_running is None or r < first_running):
+                first_running = r
+        except Exception as e:
+            print(f"WARNING: could not read metrics of {jid}: {e}")
+    syn = np.concatenate(syns)
+    dat = np.concatenate(dats)
+    pub_arr = np.asarray(pub_shots, dtype=np.int64)
     run_dir.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(run_dir / "raw.npz", syn=syn, dat=dat, cycles=cycles)
-    print(f"saved raw results -> {run_dir / 'raw.npz'}")
+    np.savez_compressed(run_dir / "raw.npz", syn=syn, dat=dat,
+                        cycles=cycles, pub_shots=pub_arr)
+    print(f"saved raw results -> {run_dir / 'raw.npz'} "
+          f"({len(pub_shots)} PUB x ~{pub_shots[0] if pub_shots else 0} shots)")
     try:
-        _json_dump({"metrics": job.metrics()}, run_dir / "job_metrics.json")
+        _json_dump({"metrics": metrics_all}, run_dir / "job_metrics.json")
         print(f"saved job_metrics.json")
     except Exception as e:
         print(f"WARNING: could not save job metrics: {e}")
-    return syn, dat, cycles
+
+    # execution-time calibration snapshot (submission-time snapshots can
+    # be hours older than the actual run when the queue is long)
+    try:
+        import datetime as _dt
+        if first_running:
+            run_ts = first_running
+            run_dt = _dt.datetime.fromisoformat(run_ts.replace("Z", "+00:00"))
+        else:
+            run_ts = time.strftime("%Y-%m-%dT%H:%M:%S")
+            run_dt = None
+            print("WARNING: no 'running' timestamp in job metrics — "
+                  "using collection time; properties_run falls back to "
+                  "current calibration")
+        if meta:
+            meta["run_started_at"] = run_ts
+            _json_dump(meta, meta_path)
+        if meta.get("backend"):
+            bk = service.backend(meta["backend"])
+            props = (bk.properties(datetime=run_dt) if run_dt
+                     else bk.properties())
+            if props is not None:
+                _json_dump(props.to_dict(), run_dir / "properties_run.json")
+                print("saved properties_run.json (calibration at run time)")
+    except Exception as e:
+        print(f"WARNING: run-time calibration snapshot failed: {e}")
+    return syn, dat, cycles, pub_arr
 
 
 def cmd_analyze(args):
@@ -330,29 +501,54 @@ def cmd_analyze(args):
         mat_fn, tensor_fn, logical_fn = (check_matrix_from_dict,
                                          syndrome_tensor, logical_label)
 
-    syn, dat, cycles = fetch_raw(args)
+    syn, dat, cycles, pub_shots = fetch_raw(args)
     shots = syn.shape[0]
     assert syn.shape[1] == n_checks * cycles and dat.shape[1] == n_data, \
         f"raw shapes {syn.shape}/{dat.shape} do not match code '{code}'"
-    print(f"shots={shots}, cycles={cycles}, code={code}")
+    n_pubs = len(pub_shots) if pub_shots is not None else 1
+    print(f"shots={shots} ({n_pubs} PUB), cycles={cycles}, code={code}")
 
     # no-reset raw -> check values via per-ancilla XOR chains
     check_mat = mat_fn(cv_fn(syn, cycles), cycles)
     y_logical = logical_fn(dat)
     raw_ler = float(y_logical.mean())
 
-    # row = (decoder, LER, parity_LER (diagnostic) or None,
-    #        LER/MWPM ratio or None, best_epoch or None,
-    #        total_epochs or None)
-    rows = [("raw (no decoding)", raw_ler, None, None, None, None)]
+    # PUB boundaries for the per-PUB LER spread (legacy runs without
+    # pub_shots count as one PUB -> std N/A)
+    bounds = None
+    if pub_shots is not None and len(pub_shots) > 1:
+        edges = np.concatenate([[0], np.cumsum(pub_shots)])
+        bounds = [(int(edges[i]), int(edges[i + 1]))
+                  for i in range(len(pub_shots))]
+
+    def std_over_pubs(pred=None, values=None):
+        """Sample std of the per-PUB LERs (pred vs y_logical, or raw
+        values)."""
+        if bounds is None:
+            return None
+        lers = []
+        for a, b in bounds:
+            if values is not None:
+                lers.append(float(values[a:b].mean()))
+            else:
+                lers.append(float((pred[a:b] != y_logical[a:b]).mean()))
+        return float(np.std(lers, ddof=1))
+
+    # row = (decoder, LER, ler_std_over_pubs or None,
+    #        parity_LER (diagnostic) or None, LER/MWPM ratio or None,
+    #        best_epoch or None, total_epochs or None)
+    rows = [("raw (no decoding)", raw_ler, std_over_pubs(values=y_logical),
+             None, None, None, None)]
 
     # MWPM baseline (DEM weights from the reference noise profile)
     from baseline.mwpm import build_matching, mwpm_ler_from_hardware
     matching = build_matching(cycles, "X", args.mwpm_p, args.mwpm_profile,
                               code)
-    mwpm_ler = mwpm_ler_from_hardware(check_mat, dat, cycles, matching,
-                                      code)
-    rows.append(("MWPM", mwpm_ler, None, None, None, None))
+    mwpm_ler, mwpm_pred = mwpm_ler_from_hardware(check_mat, dat, cycles,
+                                                 matching, code,
+                                                 return_pred=True)
+    rows.append(("MWPM", mwpm_ler, std_over_pubs(pred=mwpm_pred),
+                 None, None, None, None))
 
     # model head: a single --ckpt, or every matching checkpoint if none
     # was given. The architecture is INFERRED from the {MODEL}_ filename
@@ -430,16 +626,18 @@ def cmd_analyze(args):
             best_ep = ckpt.get("best_epoch", ckpt.get("epoch"))
             total_ep = ckpt.get("total_epochs")
             rows.append((f"{mname.upper()} ({ckpt_path.name})", model_ler,
-                         parity_ler, ratio, best_ep, total_ep))
+                         std_over_pubs(pred=pred), parity_ler, ratio,
+                         best_ep, total_ep))
 
     def _fmt(v, spec=".4f"):
         return format(v, spec) if v is not None else "N/A"
 
-    print(f"\n{'decoder':<55} {'LER':>8} "
+    print(f"\n{'decoder':<55} {'LER':>8} {'ler_std':>8} "
           f"{'parity_LER (diagnostic)':>24} {'LER/MWPM ratio':>15} "
           f"{'best_ep':>8} {'total_ep':>9}")
-    for name, v, pl, ratio, be, te in rows:
-        print(f"{name:<55} {v:>8.4f} {_fmt(pl):>24} {_fmt(ratio):>15} "
+    for name, v, sd, pl, ratio, be, te in rows:
+        print(f"{name:<55} {v:>8.4f} {_fmt(sd):>8} {_fmt(pl):>24} "
+              f"{_fmt(ratio):>15} "
               f"{_fmt(be, 'd') if be is not None else 'N/A':>8} "
               f"{_fmt(te, 'd') if te is not None else 'N/A':>9}")
 
@@ -456,27 +654,93 @@ def cmd_analyze(args):
     csv_path = RESULTS_HW_DIR / f"{hw_backend or 'unknown'}_{code_label}_{ts}.csv"
     with open(csv_path, "w", newline="") as f:
         w = csv.writer(f)
-        w.writerow(["decoder", "ler", "parity_LER (diagnostic)",
-                    "LER/MWPM ratio", "shots", "cycles", "best_epoch",
-                    "total_epochs", "backend", "timestamp", "job_id"])
-        for name, v, pl, ratio, be, te in rows:
-            w.writerow([name, f"{v:.6f}", _fmt(pl, ".6f"),
-                        _fmt(ratio, ".6f"), shots, cycles,
+        w.writerow(["decoder", "ler", "ler_std_over_pubs",
+                    "parity_LER (diagnostic)", "LER/MWPM ratio", "shots",
+                    "cycles", "best_epoch", "total_epochs", "backend",
+                    "timestamp", "job_id"])
+        for name, v, sd, pl, ratio, be, te in rows:
+            w.writerow([name, f"{v:.6f}", _fmt(sd, ".6f"),
+                        _fmt(pl, ".6f"), _fmt(ratio, ".6f"), shots, cycles,
                         be if be is not None else "",
                         te if te is not None else "",
                         hw_backend or "unknown", submitted_at or ts,
                         job_id or ""])
     print(f"saved -> {csv_path}")
+    if args.job_id:
+        _remove_pending(args.job_id)
+
+
+def cmd_collect(args):
+    """Check every entry of pending_jobs.json; analyze what finished.
+
+    Called at the start of each pipeline loop: DONE -> analyze and drop,
+    QUEUED/RUNNING -> carry over, ERROR/CANCELLED -> log the reason
+    (hardware/collect_failed.log) and drop. This path never raises /
+    sys.exits, so the sbatch loop chain (set -e) survives any single
+    job's failure."""
+    pending = _load_pending()
+    if not pending:
+        print("pending 없음")
+        return
+    try:
+        service = get_service(load_keys())
+    except (Exception, SystemExit) as e:
+        print(f"WARNING: 서비스 연결 불가({e}) — 수거 보류")
+        return
+    keep = []
+    for ent in pending:
+        jids = ent.get("job_ids") or [ent.get("job_id")]
+        label = f"{ent.get('backend')}/{ent.get('code')} {jids}"
+        try:
+            names = []
+            for jid in jids:
+                st = service.job(jid).status()
+                names.append(getattr(st, "name", st))
+        except (Exception, SystemExit) as e:
+            print(f"  {label}: 상태 조회 실패({e}) — 이월")
+            keep.append(ent)
+            continue
+        if any(n in ("ERROR", "CANCELLED") for n in names):
+            print(f"  {label}: {names} — 실패로 기록하고 제거")
+            try:
+                with open(_ROOT / "hardware" / "collect_failed.log",
+                          "a") as f:
+                    f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} "
+                            f"{label} {names}\n")
+            except Exception:
+                pass
+            continue
+        if all(n == "DONE" for n in names):
+            print(f"  {label}: DONE — 분석 시작")
+            mwpm_prof = (_latest_qpu_profile(ent.get("backend"),
+                                             ent.get("code"))
+                         or args.mwpm_profile)
+            ns = argparse.Namespace(
+                job_id=jids[0], npz=None, cycles=3,
+                code=ent.get("code"), model=args.model, ckpt=args.ckpt,
+                solution=args.solution, mwpm_profile=mwpm_prof,
+                mwpm_p=args.mwpm_p, poll=30)
+            try:
+                cmd_analyze(ns)
+            except (Exception, SystemExit) as e:
+                print(f"  {label}: 분석 실패({e}) — 이월")
+                keep.append(ent)
+            continue
+        print(f"  {label}: {names} — 이월")
+        keep.append(ent)
+    _save_pending(keep)
+    print(f"수거 완료 — pending 잔여 {len(keep)}건")
 
 
 def cmd_all(args):
-    job = cmd_submit(args)
+    jobs = cmd_submit(args)
     if args.dry_run:
         print("--dry-run: skipping wait/analyze.")
         return
-    args.job_id = job.job_id()
+    args.job_id = jobs[0].job_id()
     args.npz = None
-    wait_for_job(job, poll=args.poll)
+    for j in jobs:
+        wait_for_job(j, poll=args.poll)
     cmd_analyze(args)
 
 
@@ -488,7 +752,12 @@ def _submit_opts(p):
                    help="code family (surface support lands with the rotatedSurface3 "
                         "milestone)")
     p.add_argument("--cycles", type=int, default=3)
-    p.add_argument("--shots", type=int, default=50_000)
+    p.add_argument("--shots", type=int, default=50_000,
+                   help="shots per PUB")
+    p.add_argument("--pubs", type=int, default=1,
+                   help="number of PUBs (same ISA circuit repeated) in "
+                        "the single submitted job — total shots = "
+                        "shots x pubs with ONE queue entry")
     p.add_argument("--dd", default="XX4",
                    choices=["XX2", "XX4", "XY4", "XY8"],
                    help="DD sequence (XX4 default; Heron has no native Y)")
@@ -535,16 +804,25 @@ def main():
     _analyze_opts(a)
     a.set_defaults(func=cmd_analyze)
 
-    al = sub.add_parser("all", help="submit, wait for the job, then analyze")
+    al = sub.add_parser("all", help="submit, wait for the job, then analyze"
+                                    " (manual one-shot; the pipeline uses "
+                                    "submit + collect instead)")
     _submit_opts(al)
     _analyze_opts(al, cycles=False)   # submit already owns --cycles
     al.add_argument("--poll", type=int, default=30,
                     help="job status poll interval in seconds")
     al.set_defaults(func=cmd_all)
 
+    co = sub.add_parser("collect",
+                        help="analyze finished pending jobs "
+                             "(pending_jobs.json), carry the rest over")
+    _analyze_opts(co)
+    co.set_defaults(func=cmd_collect)
+
     # 서브커맨드 생략 시 all(제출->대기->분석 원샷)로 동작.
     argv = sys.argv[1:]
-    if argv[:1] not in (["submit"], ["analyze"], ["all"], ["-h"], ["--help"]):
+    if argv[:1] not in (["submit"], ["analyze"], ["all"], ["collect"],
+                        ["-h"], ["--help"]):
         argv.insert(0, "all")
     args = ap.parse_args(argv)
     if args.cmd == "analyze" and not (args.job_id or args.npz):

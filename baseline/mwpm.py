@@ -99,21 +99,25 @@ def mwpm_ler_from_dataset(npz_file, matching=None):
 
 
 def mwpm_ler_from_hardware(check_mat, dat, num_cycles, matching,
-                           code="heavyhex"):
+                           code="heavyhex", return_pred=False):
     """Evaluate MWPM LER on hardware data.
 
     check_mat: (shots, N_CHECKS*C) check-value matrix (check_values()
                through the code's check_matrix layout)
     dat:       (shots, num_data) final data bits
+    return_pred=True also returns the per-shot predicted logical flips
+    (for per-PUB spread statistics in hardware reports).
     """
     if code == "surface":
         from dataset_generation.rotatedSurface3_stim import (
             detectors_from_dataset_rotatedSurface3, logical_label_rotatedSurface3)
         det = detectors_from_dataset_rotatedSurface3(check_mat, dat, num_cycles)
-        return decode_ler(matching, det, logical_label_rotatedSurface3(dat))[0]
-    from dataset_generation.heavyhex33_stim import logical_label
-    det = detectors_from_dataset(check_mat, dat, num_cycles)
-    return decode_ler(matching, det, logical_label(dat))[0]
+        l, pred = decode_ler(matching, det, logical_label_rotatedSurface3(dat))
+    else:
+        from dataset_generation.heavyhex33_stim import logical_label
+        det = detectors_from_dataset(check_mat, dat, num_cycles)
+        l, pred = decode_ler(matching, det, logical_label(dat))
+    return (l, pred) if return_pred else l
 
 
 def main():

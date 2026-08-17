@@ -35,13 +35,16 @@ labels:
               device qubits via rotatedSurface3.embedding_for_surface; edges from
               rotatedSurface3.required_edges_surface()
 
-Run selection: job.json's backend / submitted_at / dry_run / code decide
-membership — dry-runs are excluded, runs of another code are excluded
-(a missing "code" field means heavyhex, the pre-code-axis format), and
-runs of different backends are never mixed (pass --backend if the runs
-folder contains several). The profile stores provenance (run ids,
-submitted_at, per-run source, code, generation time) but NO local
-absolute paths.
+Run selection: job.json's backend / dry_run / code decide membership —
+dry-runs are excluded, runs of another code are excluded (a missing
+"code" field means heavyhex, the pre-code-axis format), and runs of
+different backends are never mixed (pass --backend if the runs folder
+contains several). Ordering and the profile-name date use the run's
+ACTUAL execution time (run_started_at, recorded at collection) and fall
+back to submitted_at. Calibration values prefer properties_run.json
+(execution-time snapshot) over the submission-time target.pkl /
+properties.json. The profile stores provenance (run ids, timestamps,
+per-run source, code, generation time) but NO local absolute paths.
 
 Consumers: heavyhex profiles -> heavyhex37_qpu_stim (37q circuit),
 surface profiles -> rotatedSurface3_qpu_stim (17q circuit). Plain 4-parameter
@@ -136,7 +139,19 @@ def _extract_from_properties(props_dict):
 
 
 def extract_run(run_dir):
-    """One run folder -> (calib dicts, source name)."""
+    """One run folder -> (calib dicts, source name).
+
+    Priority: properties_run.json (calibration AS OF the job's actual
+    execution time, saved at collection) > target.pkl (submission-time)
+    > properties.json (submission-time fallback)."""
+    prun = run_dir / "properties_run.json"
+    if prun.exists():
+        try:
+            return _extract_from_properties(json.load(open(prun))), \
+                "properties_run.json"
+        except Exception as e:
+            print(f"   WARNING: {run_dir.name}: properties_run.json "
+                  f"unreadable ({e}), falling back")
     tpkl = run_dir / "target.pkl"
     if tpkl.exists():
         try:
@@ -151,7 +166,8 @@ def extract_run(run_dir):
         return _extract_from_properties(json.load(open(pjson))), \
             "properties.json"
     raise FileNotFoundError(
-        f"{run_dir.name}: neither target.pkl nor properties.json")
+        f"{run_dir.name}: no properties_run.json / target.pkl / "
+        f"properties.json")
 
 
 # ------------------------------------------------------------------
@@ -173,7 +189,10 @@ def select_runs(runs_dir, backend, n_runs, code):
             continue
         if meta.get("code", "heavyhex") != code:
             continue
-        cands.append((meta.get("backend"), meta.get("submitted_at", ""), d))
+        # timestamp = actual run start (recorded at collection) when
+        # available, else submission time
+        ts = meta.get("run_started_at") or meta.get("submitted_at", "")
+        cands.append((meta.get("backend"), ts, d))
     backends = sorted({b for b, _, _ in cands})
     if not cands:
         sys.exit(f"no non-dry-run '{code}' submissions found under "
@@ -293,8 +312,9 @@ def main():
                                       readout, err1q, err2q)
 
     run_ids = [d.name for _, _, d in picked]
-    # date suffix = newest submitted_at among the averaged runs (YYYYMMDD)
-    newest = max(sub for _, sub, _ in picked)
+    # date suffix = newest run timestamp among the averaged runs
+    # (run_started_at when collected, else submitted_at; YYYYMMDD)
+    newest = max(ts for _, ts, _ in picked)
     date8 = newest[:10].replace("-", "")
     name = f"qpu/{backend}_{args.code}_avg{len(picked)}_{date8}"
     if args.suffix:
@@ -306,7 +326,7 @@ def main():
         "n_runs": len(picked),
         "provenance": {
             "run_ids": run_ids,
-            "submitted_at": [sub for _, sub, _ in picked],
+            "timestamps": [ts for _, ts, _ in picked],
             "source": sources,
             "code": args.code,
             "generated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),

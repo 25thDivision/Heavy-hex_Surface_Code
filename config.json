@@ -71,7 +71,8 @@
       "heavyhex": "ibm_boston",
       "surface": "ibm_miami"
     },
-    "qpu_runs": 5,
+    "qpu_pubs": 5,
+    "profile_runs": 5,
     "shots": 50000,
     "train_args": "--mwpm"
   }
