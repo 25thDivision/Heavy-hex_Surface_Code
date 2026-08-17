@@ -163,11 +163,16 @@ def cmd_submit(args):
     keys = load_keys()
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 1) coupling map + patch validation (must run before circuit
-    #    building), then 2) the code's hardware circuit
+    # 1) coupling map + backend handle, then 2) the code's hardware
+    #    circuit and its device placement
     coupling_path = fetch(args.backend, token=keys["ibm_token"],
                           instance=keys["ibm_instance"], outdir=str(RUNS_DIR))
+    service = get_service(keys)
+    backend = service.backend(args.backend)
+    placement_info = None
     if args.code == "surface":
+        # surface (miami)는 자동 배치 비활성 — observable frame 문제 확정
+        # 전까지 정적 45도 임베딩 유지 (placement 모듈 자체는 코드 공용)
         from circuits.rotatedSurface.rotatedSurface3 import (
             RotatedSurface3Hardware, ALL_COORDS, embedding_for_surface,
             validate_backend_surface)
@@ -178,15 +183,41 @@ def cmd_submit(args):
         layout = [embedding_for_surface(args.backend)[c]
                   for c in ALL_COORDS]
     else:
-        validate_backend(coupling_path)
-        print(f"backend '{args.backend}': 37q patch validated")
+        # heavyhex: 캘리브레이션 인지 자동 배치 (루프 체인 동안 고정 —
+        # hardware/placement_<backend>_heavyhex.json 재사용, 임계값 위반
+        # 시에만 재탐색; --reselect-layout으로 강제 재선택)
+        from circuits.placement import resolve_placement
+        from circuits.heavyhex.heavyhex_37q import required_edges
         qc = HeavyHex37QDepthOpt(args.cycles).build_circuit()
-        layout = [embedding_for(args.backend)[p] for p in ALL_PHYS]
+        cm = json.load(open(coupling_path))
+        try:
+            static_map = embedding_for(args.backend)
+        except RuntimeError:
+            static_map = None
+        mapping, placement_info = resolve_placement(
+            args.backend, "heavyhex", _ROOT / "hardware",
+            ALL_PHYS, required_edges(), qc,
+            [tuple(e) for e in cm["coupling_map"]], backend.target,
+            static_mapping=static_map,
+            reselect=getattr(args, "reselect_layout", False))
+        if mapping is None:
+            print("WARNING: 유효한 자동 배치 없음 — 정적 임베딩으로 폴백")
+            validate_backend(coupling_path)
+            mapping = embedding_for(args.backend)
+            placement_info = {"fallback": "static",
+                              **(placement_info or {})}
+        else:
+            # 선택된 배치가 required edges를 실제로 덮는지 이중 확인
+            eset = {tuple(sorted(e)) for e in cm["coupling_map"]}
+            for u, v in required_edges():
+                assert tuple(sorted((mapping[u], mapping[v]))) in eset
+            print(f"backend '{args.backend}': 37q patch placed "
+                  f"(auto, qubits {min(mapping.values())}"
+                  f"–{max(mapping.values())})")
+        layout = [mapping[p] for p in ALL_PHYS]
 
     # 3) transpile with the fixed physical layout (patch labels mapped to
     #    this backend's device qubits), then insert DD
-    service = get_service(keys)
-    backend = service.backend(args.backend)
     tqc = transpile(qc, backend=backend, initial_layout=layout,
                     optimization_level=1)
     tqc = apply_dd(tqc, backend.target, sequence=args.dd)
@@ -250,6 +281,7 @@ def cmd_submit(args):
             "dry_run": args.dry_run,
             "transpiled_depth": tqc.depth(),
             "transpiled_ops": {k: int(v) for k, v in tqc.count_ops().items()},
+            "placement": placement_info,
             "versions": _local_versions()}
     _json_dump(meta, run_dir / "job.json")
     print(f"run folder: {run_dir}")
@@ -763,6 +795,11 @@ def _submit_opts(p):
                    help="DD sequence (XX4 default; Heron has no native Y)")
     p.add_argument("--dry-run", action="store_true",
                    help="do everything except the actual submission")
+    p.add_argument("--reselect-layout", action="store_true",
+                   help="ignore the pinned placement file and search a "
+                        "fresh calibration-optimal placement (heavyhex "
+                        "auto-placement only; default: reuse the pinned "
+                        "placement unless it violates a threshold)")
 
 
 def _analyze_opts(p, cycles=True):

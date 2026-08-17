@@ -22,3 +22,8 @@ __pycache__/
 # editors
 .vscode/
 .idea/
+
+# hardware runtime state (per-machine)
+hardware/pending_jobs.json
+hardware/collect_failed.log
+hardware/placement_*.json

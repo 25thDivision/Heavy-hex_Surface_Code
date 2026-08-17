@@ -26,14 +26,15 @@ Per-run extraction (target.pkl preferred, properties.json fallback):
   * per-qubit 1Q gate error            (sx preferred, x fallback)
   * per-physical-edge 2Q gate error    (any 2-qubit op: ecr/cz/cx;
                                         directions averaged)
-Values are arithmetically averaged across runs (per quantity, over the
-runs where it is present), then mapped from device qubits to patch
-labels:
-  * heavyhex: 37q patch physical labels (heavyhex_37q.embedding_for)
-  * surface : rotatedSurface3 patch LOCAL indices 0..16 in circuits.rotatedSurface.rotatedSurface3
-              ALL_COORDS order (data 0-8, ancillas 9-16 in CYCLE_ORDER),
-              device qubits via rotatedSurface3.embedding_for_surface; edges from
-              rotatedSurface3.required_edges_surface()
+Each run's device-qubit values are first mapped to PATCH LABELS using
+THAT run's own placement (job.json initial_layout — auto-placement can
+move the patch between runs; legacy runs without a layout fall back to
+the static embedding), and the arithmetic average is then taken in
+patch-label space (per key, over the runs where it is present):
+  * heavyhex: 37q patch physical labels (ALL_PHYS order)
+  * surface : rotatedSurface3 patch LOCAL indices 0..16
+              (ALL_COORDS order — data 0-8, ancillas 9-16 in
+              CYCLE_ORDER); edges from required_edges_surface()
 
 Run selection: job.json's backend / dry_run / code decide membership —
 dry-runs are excluded, runs of another code are excluded (a missing
@@ -245,32 +246,21 @@ def _patch_layout(code, backend):
     return list(ALL_PHYS), required_edges(), dict(emb)
 
 
-def map_to_patch(backend, code, readout, err1q, err2q):
-    """Device-qubit keyed calib -> patch-label keyed profile fields."""
-    labels, edges, dev_of = _patch_layout(code, backend)
-    miss = []
-    p_read, p_1q, p_2q = {}, {}, {}
-    for p in labels:
-        dq = dev_of[p]
-        if dq in readout:
-            p_read[str(p)] = readout[dq]
-        else:
-            miss.append(f"readout q{dq}")
-        if dq in err1q:
-            p_1q[str(p)] = err1q[dq]
-        else:
-            miss.append(f"1q q{dq}")
-    for u, v in edges:
+def run_to_patch(calib, labels, patch_edges, dev_of):
+    """ONE run's device-keyed calib -> patch-label keyed dicts, using
+    THAT run's device mapping (auto-placement can move the patch between
+    runs, so the label<->qubit assignment is per run)."""
+    readout, err1q, err2q = calib
+    ro = {str(l): readout[dev_of[l]] for l in labels
+          if dev_of[l] in readout}
+    e1 = {str(l): err1q[dev_of[l]] for l in labels
+          if dev_of[l] in err1q}
+    e2 = {}
+    for u, v in patch_edges:
         dev = tuple(sorted((dev_of[u], dev_of[v])))
-        key = f"{min(u, v)}-{max(u, v)}"
         if dev in err2q:
-            p_2q[key] = err2q[dev]
-        else:
-            miss.append(f"2q {dev}")
-    if miss:
-        sys.exit(f"calibration values missing for the {code} patch after "
-                 f"averaging: {miss[:10]}{'...' if len(miss) > 10 else ''}")
-    return p_read, p_1q, p_2q
+            e2[f"{min(u, v)}-{max(u, v)}"] = err2q[dev]
+    return ro, e1, e2
 
 
 def main():
@@ -299,17 +289,38 @@ def main():
     backend, picked = select_runs(args.runs_dir, args.backend, args.n_runs,
                                   args.code)
     print(f"backend {backend} / {args.code}: averaging {len(picked)} run(s)")
+    labels, patch_edges, static_dev_of = _patch_layout(args.code, backend)
     per_run, sources = [], []
     for _, sub, d in picked:
         calib, src = extract_run(d)
-        per_run.append(calib)
         sources.append(src)
-        print(f"   {d.name} ({sub}, {src}): "
-              f"{len(calib[0])} readout / {len(calib[1])} 1q / "
-              f"{len(calib[2])} 2q values")
-    readout, err1q, err2q = average_profiles(per_run)
-    p_read, p_1q, p_2q = map_to_patch(backend, args.code,
-                                      readout, err1q, err2q)
+        # THIS run's actual patch placement: job.json's initial_layout
+        # (ordered like the labels); legacy runs without one fall back
+        # to the static embedding
+        try:
+            lay = json.load(open(d / "job.json")).get("initial_layout")
+        except Exception:
+            lay = None
+        if lay and len(lay) == len(labels):
+            dev_of = dict(zip(labels, lay))
+            lay_src = "run layout"
+        else:
+            dev_of = static_dev_of
+            lay_src = "static embedding"
+        per_run.append(run_to_patch(calib, labels, patch_edges, dev_of))
+        print(f"   {d.name} ({sub}, {src}, {lay_src}): "
+              f"{len(per_run[-1][0])} readout / {len(per_run[-1][1])} 1q "
+              f"/ {len(per_run[-1][2])} 2q patch values")
+    # average in PATCH-LABEL space (per key, over runs where present)
+    p_read, p_1q, p_2q = average_profiles(per_run)
+    miss = ([f"readout {l}" for l in labels if str(l) not in p_read]
+            + [f"1q {l}" for l in labels if str(l) not in p_1q]
+            + [f"2q {min(u, v)}-{max(u, v)}" for u, v in patch_edges
+               if f"{min(u, v)}-{max(u, v)}" not in p_2q])
+    if miss:
+        sys.exit(f"calibration values missing for the {args.code} patch "
+                 f"after averaging: "
+                 f"{miss[:10]}{'...' if len(miss) > 10 else ''}")
 
     run_ids = [d.name for _, _, d in picked]
     # date suffix = newest run timestamp among the averaged runs

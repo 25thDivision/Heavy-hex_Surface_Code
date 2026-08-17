@@ -456,11 +456,23 @@ cp keys.example.json keys.json     # 그리고 네 거로 적으면 됨
 말 것.** 기본 백엔드는 `ibm_yonsei`이고, `--backend ibm_boston`으로 바꿀 수
 있어. 일단 `ibm_yonsei` 해보고 결과가 도저히 안 나오면 `ibm_boston`으로 해 볼 것~
 
-백엔드별 37q 패치의 물리 큐빗 임베딩은
-`circuits/heavyhex/heavyhex_37q.py`의 `EMBEDDINGS`에 등록돼 있어
-(boston/aachen/pittsburgh는 Heron 번호 그대로, yonsei는 Eagle r3 레이아웃
-매핑). `validate_backend`가 임베딩을 자동 선택해서 커플링을 검사하고,
-목록에 없는 백엔드는 매핑을 추가하라는 에러가 나.
+**heavyhex 패치 배치는 자동이야** ([circuits/placement.py](circuits/placement.py)):
+제출 시 coupling map에서 유효한 배치를 전부 찾아(VF2, 후보 수십 개)
+그날 캘리브레이션으로 점수화(게이트 항: 사용량×에러 + idle 항: 레이어
+슬라이스 기반 T1/T2 감쇠, Vezvaee et al. arXiv:2510.18847 부록 D 준용)해서
+최적 위치를 골라. **죽은 큐빗(에러 None/1.0, T1·T2 하한 미달, 임계값
+초과)이 낀 배치는 자동 배제**돼 — 실제로 boston q85(1Q 에러 1.0,
+T1 8µs)가 이걸로 걸러졌어. 선택된 배치는
+`hardware/placement_<backend>_heavyhex.json`에 기록돼 **루프 체인 동안
+고정**되고, 다음 제출에서 기록 배치가 임계값을 위반할 때만 재탐색해
+(사유는 파일과 job.json에 기록). 매 제출 재선택은 `--reselect-layout`
+플래그로만. 선택 배치·점수·차순위·정적 임베딩 점수는 job.json의
+`placement`에 남고, qpu 프로파일은 **각 run의 job.json layout으로 그
+런의 실제 배치를 복원**해 패치 라벨 공간에서 평균해 — 배치가 이동해도
+프로파일이 일관돼. 자동 배치가 전부 배제되면 기존 `EMBEDDINGS` 정적
+임베딩으로 폴백해 (yonsei 등 수동 등록도 폴백용으로 유지).
+**surface(miami)는 observable frame 문제 확정 전까지 자동 배치 비활성** —
+기존 정적 45도 임베딩 그대로야.
 
 ## 6. Slurm (서버)
 
