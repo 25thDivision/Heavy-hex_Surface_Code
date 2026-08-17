@@ -2,7 +2,7 @@
   "cycles": 3,
   "train": {
     "epochs": 30,
-    "patience": 5,
+    "patience": 3,
     "batch_size": 2048,
     "lr": 0.001,
     "aux_weight": 0.5,

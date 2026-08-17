@@ -171,8 +171,15 @@ try: print(len(json.load(open('hardware/pending_jobs.json'))))
 except Exception: print(0)")
 if (( LOOP < LOOPS )); then
     echo "=== 루프 $LOOP 완료 (pending ${PENDING_LEFT}건) — 다음 루프($((LOOP + 1))/$LOOPS) 재제출 ==="
+    # --continue-stopped는 "이번 루프만" 유효 (레짐 변경 직후 1회 재수렴용)
+    # — 다음 루프부터는 제거해서 skip 동작으로 복귀
+    NEXT_ARGS=()
+    for a in "$@"; do
+        [[ "$a" == "--continue-stopped" ]] || NEXT_ARGS+=("$a")
+    done
     if command -v sbatch >/dev/null 2>&1; then
-        sbatch --export=ALL,LOOP=$((LOOP + 1)) pipeline.sbatch "$@"
+        sbatch --export=ALL,LOOP=$((LOOP + 1)) pipeline.sbatch \
+            ${NEXT_ARGS[@]+"${NEXT_ARGS[@]}"}
     else
         echo "WARNING: sbatch를 찾을 수 없어 재제출 불가 — LOOP=$((LOOP + 1))로 직접 제출할 것"
     fi
