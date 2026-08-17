@@ -271,10 +271,12 @@ def resolve_placement(backend_name, code, state_dir, labels,
     chosen_at."""
     path = placement_path(state_dir, backend_name, code)
     reason = None
+    # JSON keys are strings — recover the original label objects (int
+    # patch labels for heavyhex, coordinate tuples for surface) via str()
+    by_str = {str(l): l for l in labels}
     if path.exists() and not reselect:
         rec = json.load(open(path))
-        # JSON keys are strings — coerce back to int patch labels
-        mapping = {int(k): v for k, v in rec["mapping"].items()}
+        mapping = {by_str[k]: v for k, v in rec["mapping"].items()}
         ok, why = check_placement(mapping, labels, pattern_edges, target)
         if ok:
             print(f"placement: {path.name} 재사용 (score at selection: "

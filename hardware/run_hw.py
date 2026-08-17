@@ -171,17 +171,40 @@ def cmd_submit(args):
     backend = service.backend(args.backend)
     placement_info = None
     if args.code == "surface":
-        # surface (miami)는 자동 배치 비활성 — observable frame 문제 확정
-        # 전까지 정적 45도 임베딩 유지 (placement 모듈 자체는 코드 공용)
+        # surface도 캘리브레이션 인지 자동 배치 (heavyhex와 동일 정책:
+        # 체인 동안 고정, 임계값 위반 시 재탐색, --reselect-layout).
+        # 회로/clbit/logical 정의가 전부 패치-로컬 좌표라 어떤 동형
+        # 배치든 의미가 보존된다. 실패 시 정적 45도 임베딩 폴백.
         from circuits.rotatedSurface.rotatedSurface3 import (
             RotatedSurface3Hardware, ALL_COORDS, embedding_for_surface,
-            validate_backend_surface)
-        validate_backend_surface(coupling_path)
-        print(f"backend '{args.backend}': rotatedSurface3 17q patch validated "
-              f"(45-degree embedding, no SWAPs)")
+            validate_backend_surface, required_edges_surface)
+        from circuits.placement import resolve_placement
         qc = RotatedSurface3Hardware(args.cycles).build_circuit()
-        layout = [embedding_for_surface(args.backend)[c]
-                  for c in ALL_COORDS]
+        cm = json.load(open(coupling_path))
+        try:
+            static_map = embedding_for_surface(args.backend)
+        except RuntimeError:
+            static_map = None
+        mapping, placement_info = resolve_placement(
+            args.backend, "surface", _ROOT / "hardware",
+            ALL_COORDS, required_edges_surface(), qc,
+            [tuple(e) for e in cm["coupling_map"]], backend.target,
+            static_mapping=static_map,
+            reselect=getattr(args, "reselect_layout", False))
+        if mapping is None:
+            print("WARNING: 유효한 자동 배치 없음 — 정적 45도 임베딩 폴백")
+            validate_backend_surface(coupling_path)
+            mapping = embedding_for_surface(args.backend)
+            placement_info = {"fallback": "static",
+                              **(placement_info or {})}
+        else:
+            eset = {tuple(sorted(e)) for e in cm["coupling_map"]}
+            for u, v in required_edges_surface():
+                assert tuple(sorted((mapping[u], mapping[v]))) in eset
+            print(f"backend '{args.backend}': rotatedSurface3 17q patch "
+                  f"placed (auto, qubits {min(mapping.values())}"
+                  f"–{max(mapping.values())})")
+        layout = [mapping[c] for c in ALL_COORDS]
     else:
         # heavyhex: 캘리브레이션 인지 자동 배치 (루프 체인 동안 고정 —
         # hardware/placement_<backend>_heavyhex.json 재사용, 임계값 위반

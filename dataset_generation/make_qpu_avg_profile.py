@@ -246,19 +246,33 @@ def _patch_layout(code, backend):
     return list(ALL_PHYS), required_edges(), dict(emb)
 
 
+# dead-calibration handling: IBM reports failed calibrations as 1.0 (or
+# None). Such values are DROPPED per run (the average uses valid runs
+# only); a key that is invalid in EVERY run gets a stim-safe clamp value
+# with a loud warning instead of poisoning the profile (DEPOLARIZE2 with
+# p >= 15/16 is rejected by stim's detector error model).
+BAD_VALUE = 1.0
+CLAMP = {"readout": 0.5, "error_1q": 0.5, "error_2q": 0.75}
+
+
+def _ok(v):
+    return v is not None and v < BAD_VALUE
+
+
 def run_to_patch(calib, labels, patch_edges, dev_of):
     """ONE run's device-keyed calib -> patch-label keyed dicts, using
     THAT run's device mapping (auto-placement can move the patch between
-    runs, so the label<->qubit assignment is per run)."""
+    runs, so the label<->qubit assignment is per run). Dead values
+    (None / >= 1.0) are dropped here."""
     readout, err1q, err2q = calib
     ro = {str(l): readout[dev_of[l]] for l in labels
-          if dev_of[l] in readout}
+          if _ok(readout.get(dev_of[l]))}
     e1 = {str(l): err1q[dev_of[l]] for l in labels
-          if dev_of[l] in err1q}
+          if _ok(err1q.get(dev_of[l]))}
     e2 = {}
     for u, v in patch_edges:
         dev = tuple(sorted((dev_of[u], dev_of[v])))
-        if dev in err2q:
+        if _ok(err2q.get(dev)):
             e2[f"{min(u, v)}-{max(u, v)}"] = err2q[dev]
     return ro, e1, e2
 
@@ -311,16 +325,28 @@ def main():
         print(f"   {d.name} ({sub}, {src}, {lay_src}): "
               f"{len(per_run[-1][0])} readout / {len(per_run[-1][1])} 1q "
               f"/ {len(per_run[-1][2])} 2q patch values")
-    # average in PATCH-LABEL space (per key, over runs where present)
+    # average in PATCH-LABEL space (per key, over VALID runs only)
     p_read, p_1q, p_2q = average_profiles(per_run)
-    miss = ([f"readout {l}" for l in labels if str(l) not in p_read]
-            + [f"1q {l}" for l in labels if str(l) not in p_1q]
-            + [f"2q {min(u, v)}-{max(u, v)}" for u, v in patch_edges
-               if f"{min(u, v)}-{max(u, v)}" not in p_2q])
-    if miss:
-        sys.exit(f"calibration values missing for the {args.code} patch "
-                 f"after averaging: "
-                 f"{miss[:10]}{'...' if len(miss) > 10 else ''}")
+    # keys with no valid value in ANY run (dead qubit/edge or missing
+    # calibration) get a stim-safe clamp value + warning — the profile
+    # stays usable and the pipeline chain stays alive
+    clamped = []
+    for l in labels:
+        if str(l) not in p_read:
+            p_read[str(l)] = CLAMP["readout"]
+            clamped.append(f"readout {l}")
+        if str(l) not in p_1q:
+            p_1q[str(l)] = CLAMP["error_1q"]
+            clamped.append(f"1q {l}")
+    for u, v in patch_edges:
+        key = f"{min(u, v)}-{max(u, v)}"
+        if key not in p_2q:
+            p_2q[key] = CLAMP["error_2q"]
+            clamped.append(f"2q {key}")
+    if clamped:
+        print(f"WARNING: {len(clamped)}개 키가 전 run에서 불량(None/1.0) "
+              f"또는 미제공 — stim-안전 상한으로 클램프: "
+              f"{clamped[:8]}{'...' if len(clamped) > 8 else ''}")
 
     run_ids = [d.name for _, _, d in picked]
     # date suffix = newest run timestamp among the averaged runs

@@ -62,6 +62,25 @@ from dataset_generation.rotatedSurface3_stim import (  # noqa: E402
 
 _ZERO = {"readout": {}, "error_1q": {}, "error_2q": {}}
 
+# stim/DEM-safe probability caps (defense-in-depth: the profile
+# generator already clamps dead values, but a hand-edited or legacy
+# profile must never crash the sampler / detector-error-model)
+_CAP = {"readout": 0.5, "error_1q": 0.5, "error_2q": 0.75}
+
+
+def _capped(d, kind):
+    out, clamped = {}, []
+    for k, v in d.items():
+        if v is None or v > _CAP[kind]:
+            clamped.append((k, v))
+            v = _CAP[kind]
+        out[k] = v
+    if clamped:
+        print(f"WARNING: {kind} {len(clamped)} value(s) clamped to "
+              f"{_CAP[kind]} (dead/over-limit calibration): "
+              f"{clamped[:4]}{'...' if len(clamped) > 4 else ''}")
+    return out
+
 
 def _rates(profile):
     """Profile dict -> lookup helpers over LOCAL indices (0.0 where
@@ -71,12 +90,15 @@ def _rates(profile):
         raise ValueError(
             "rotatedSurface3_qpu_stim needs a --code surface qpu_avg profile "
             f"(got code '{prof.get('code', 'heavyhex')}')")
-    ro = {int(k): v for k, v in prof.get("readout", {}).items()}
-    e1 = {int(k): v for k, v in prof.get("error_1q", {}).items()}
+    ro = _capped({int(k): v for k, v in prof.get("readout", {}).items()},
+                 "readout")
+    e1 = _capped({int(k): v for k, v in prof.get("error_1q", {}).items()},
+                 "error_1q")
     e2 = {}
     for k, v in prof.get("error_2q", {}).items():
         u, w = (int(x) for x in k.split("-"))
         e2[tuple(sorted((u, w)))] = v
+    e2 = _capped(e2, "error_2q")
     return (lambda q: ro.get(q, 0.0),
             lambda q: e1.get(q, 0.0),
             lambda a, b: e2.get(tuple(sorted((a, b))), 0.0))
