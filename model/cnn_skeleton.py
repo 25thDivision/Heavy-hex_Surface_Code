@@ -14,7 +14,8 @@ Input : (B, 2*num_cycles + 1, H, W) uint8 tensor
           (circuits/rotatedSurface/rotatedSurface3.py, ANC_GRID); the constructor's `code`
           argument selects the grid via model.CODE_SPECS
         - channels alternate [Z-plane, X-plane] per cycle
-          (default num_cycles=3 -> in_channels=6)
+          (default num_cycles=3 -> in_channels=6, so the tensor the
+          model actually sees has 7 channels)
         - the LAST channel holds the final-Z detector bits
           (prepare_features / model.graph.augment_features — the same
           detector set the GNN and MWPM consume). Not label leakage:

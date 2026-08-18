@@ -40,7 +40,8 @@ model/gnn_skeleton.py)의 모델만 비어 있어.** 이 파일만 채우면 아
 같은 데이터셋/평가/하드웨어 파이프라인 위에서 두 아키텍처를 선택할 수 있어:
 
 - **cnn** — 4×5 다이아몬드 격자 텐서를 그대로 받는 dual-head CNN
-  ([model/cnn_skeleton.py](model/cnn_skeleton.py)).
+  (+ final-Z detector 채널 1개, `prepare_features`가 자동 추가;
+  [model/cnn_skeleton.py](model/cnn_skeleton.py)).
 - **gnn** — detector를 노드로 하는 그래프 신경망
   ([model/gnn_skeleton.py](model/gnn_skeleton.py)). **데이터셋 파일은 CNN과
   공용**이고 (npz 포맷 무변경), 그래프 변환은 모델 쪽에서 일어나.
@@ -52,7 +53,7 @@ model/gnn_skeleton.py)의 모델만 비어 있어.** 이 파일만 채우면 아
 한 스윕에서 cnn/gnn을 같은 데이터로 이어 학습해 **CNN/GNN/MWPM이 한 표에**
 나오는 요약을 얻을 수 있어.
 
-#### GNN 그래프 표현 (그리고 CNN과의 입력 비대칭)
+#### GNN 그래프 표현
 
 [model/graph.py](model/graph.py)의 `GraphBuilder`가 (code, cycles)별 정적
 그래프를 만들어:
@@ -67,18 +68,17 @@ model/gnn_skeleton.py)의 모델만 비어 있어.** 이 파일만 채우면 아
   시간(같은 check의 인접 cycle),
   final-Z(final-Z 노드끼리 support 공유 + 자신의 마지막 cycle Z-check).
 - **입력 증강**: final-Z detector 값(= final-data Z-support parity ^ 마지막
-  cycle Z-check)은 `(2C,4,5)` 텐서에 없는 정보라, `--model gnn`일 때
-  train.py / run_hw.py가 `augment_features`로 **채널 1개를 추가**한
-  `(B, 2C+1, 4, 5)` 텐서를 만들어 forward에 넘겨줘 (시뮬레이션은 npz의
-  `labels`(측정 flip)에서, 하드웨어는 측정된 final data 비트에서 계산 —
-  둘 다 MWPM의 detector 재구성과 비트 단위로 동일).
+  cycle Z-check)은 `(2C,4,5)` 텐서에 없는 정보라, **cnn/gnn 모두** 각 모델
+  모듈의 `prepare_features`를 통해 train.py / run_hw.py가
+  `augment_features`로 **채널 1개를 추가**한 `(B, 2C+1, H, W)` 텐서를
+  forward에 넘겨줘 (시뮬레이션은 npz의 `labels`(측정 flip)에서, 하드웨어는
+  측정된 final data 비트에서 계산 — 둘 다 MWPM의 detector 재구성과 비트
+  단위로 동일).
 
 **final-Z 노드는 라벨 누출이 아니야**: final-Z detector는 final 측정의
 Z-stabilizer parity이고, logical Z(data [69,87,105])는 Z-stabilizer 곱으로
-표현될 수 없어서 목표 지표(head-LER)의 라벨이 유도되지 않아. MWPM이 쓰는
-입력과 정확히 같은 정보야. 다만 **CNN 텐서에는 final-data 유도 신드롬이
-없으므로 CNN과 GNN의 입력은 비대칭**이고, CNN/GNN 비교를 읽을 때 이 차이를
-감안해야 해 (CNN은 in-run 신드롬만, GNN은 in-run + final-round 신드롬).
+표현될 수 없어서 목표 지표(head-LER)의 라벨이 유도되지 않아.
+**CNN·GNN·MWPM 셋 다 정확히 같은 detector 정보를 받아.**
 
 GNN 모델 자체는 순수 torch로 구현해 (torch_geometric 등 그래프 라이브러리
 금지) — 노드 수가 작아서 dense adjacency matmul(`self.adj @ h`) 기반 MPNN
@@ -119,7 +119,8 @@ GNN 모델 자체는 순수 torch로 구현해 (torch_geometric 등 그래프 �
   (per-qubit 9비트).
 - **CNN 텐서**: `(2*cycles, 4, 4)` — ancilla 8개를 (d+1)×(d+1)=4×4
   plaquette-꼭짓점 격자에 임베딩 (`rotatedSurface3.ANC_GRID`), 채널은 heavyhex와
-  동일한 [Z-plane, X-plane]×cycle.
+  동일한 [Z-plane, X-plane]×cycle (데이터셋 npz 기준; 모델 입력 시 final-Z
+  detector 채널 1개가 붙어 2*cycles+1).
 - **GNN**: P1의 detector-node 표현이 그대로 적용돼 (c=3 기준 노드 24개 =
   Z 4×3 + X 4×2 + final-Z 4).
 - **게이트**: `python verification/verify_rotatedSurface3.py`가 ALL PASS여야
@@ -426,7 +427,8 @@ Stim 회로와 QPU 회로는 check-value 수준에서 **비트 단위로** 일�
   observable = logical Z = data [69, 87, 105]의 parity
 - 입력 텐서: `(2*num_cycles, 4, 5)` — ancilla 8개를 4×5 다이아몬드 격자에
   임베딩 (`ANC_COORD`, rung 정의에서 유도), 채널은
-  `[Z-plane, X-plane] × cycle`
+  `[Z-plane, X-plane] × cycle` (데이터셋 npz 기준; 모델 입력 시 final-Z
+  detector 채널 1개가 붙어 2*num_cycles+1)
 
 `verification/verify_equivalence.py`가 이 전부를 검사해줘 (Stim 결정론, 무노이즈 Aer 불변량, 단일 에러 서명 일치).
 
