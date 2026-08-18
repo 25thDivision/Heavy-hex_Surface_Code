@@ -22,7 +22,8 @@
     },
     "runs": [
       {
-        "model": "cnn"
+        "model": "cnn",
+        "name": "finalz"
       },
       {
         "model": "gnn"

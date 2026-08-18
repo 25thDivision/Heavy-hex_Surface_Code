@@ -7,7 +7,7 @@ below — the rest of the pipeline (dataset generation, training loop,
 evaluation, MWPM baseline, hardware run) is already done and will run as
 soon as you finish this file.
 
-Input : (B, 2*num_cycles, H, W) uint8 syndrome tensor
+Input : (B, 2*num_cycles + 1, H, W) uint8 tensor
         - heavyhex: 4x5 diamond embedding of the 8 ancillas
           (dataset_generation/heavyhex33_stim.py, ANC_COORD)
         - surface (--code surface): 4x4 plaquette-vertex grid
@@ -15,6 +15,11 @@ Input : (B, 2*num_cycles, H, W) uint8 syndrome tensor
           argument selects the grid via model.CODE_SPECS
         - channels alternate [Z-plane, X-plane] per cycle
           (default num_cycles=3 -> in_channels=6)
+        - the LAST channel holds the final-Z detector bits
+          (prepare_features / model.graph.augment_features — the same
+          detector set the GNN and MWPM consume). Not label leakage:
+          logical Z is not a product of Z-stabilizers, so head-LER's
+          label cannot be derived from it.
 Output: qubit_logits   (B, 17) — per-qubit X-error head
                                  (diagnostics: ECR, parity_LER)
         logical_logits (B, 1)  — logical Z flip head
@@ -36,12 +41,30 @@ Hints:
   * Use torch.nn.functional.binary_cross_entropy_with_logits (the heads
     output logits, not probabilities).
 """
+import sys
+from pathlib import Path
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from model.graph import augment_features  # noqa: E402
+
 NUM_QUBITS = 17
 GRID_H, GRID_W = 4, 5           # heavy-hex diamond default
+
+
+def prepare_features(features, final_bits, code="heavyhex"):
+    """Dataset tensor (B,2C,H,W) + final bits (B,num_qubits) -> augmented input.
+
+    train.py passes the per-qubit flip labels; hardware/run_hw.py passes
+    the measured final data bits. Same detector bits either way (see
+    model/graph.py). Provided — do not change."""
+    return augment_features(features, final_bits, code)
 
 
 class HeavyHexCNN(nn.Module):
@@ -55,8 +78,10 @@ class HeavyHexCNN(nn.Module):
         # ------------------------------------------------------------------
         # TODO 1/3 — feature extractor
         # Build self.features: a stack of Conv2d(3x3, padding=1) blocks
-        # (BatchNorm2d + ReLU after each conv). Input has `in_channels`
-        # channels; keep the grid_h x grid_w spatial size (no pooling).
+        # (BatchNorm2d + ReLU after each conv). The input tensor has
+        # `in_channels + 1` channels (the +1 is the final-Z detector
+        # channel added by prepare_features); keep the grid_h x grid_w
+        # spatial size (no pooling).
         # Also build self.shared: Flatten -> Linear(conv_channels*grid_h*
         # grid_w, fc_dim) -> ReLU -> Dropout(dropout).
         # ------------------------------------------------------------------
