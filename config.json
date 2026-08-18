@@ -68,7 +68,7 @@
       "surface"
     ],
     "backends": {
-      "heavyhex": "ibm_boston",
+      "heavyhex": "ibm_pittsburgh",
       "surface": "ibm_miami"
     },
     "qpu_pubs": 5,
