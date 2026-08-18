@@ -27,3 +27,6 @@ __pycache__/
 hardware/pending_jobs.json
 hardware/collect_failed.log
 hardware/placement_*.json
+
+# legacy / deprecated
+README_old.md
